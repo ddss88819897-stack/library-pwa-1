@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { auth, db } from './firebase'; 
 import { signOut } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, collection, query, where, deleteDoc, addDoc, serverTimestamp } from 'firebase/firestore'; 
-import { format, addDays, startOfDay } from 'date-fns';
+import { format, addDays, startOfDay, startOfMonth, endOfMonth, startOfWeek, endOfWeek, eachDayOfInterval, isSameMonth, isSameDay, isPast, addMonths, subMonths } from 'date-fns';
+import { ko } from 'date-fns/locale';
 
 import MyPage from './pages/MyPage';
 import ScannerPage from './pages/Scanner';
@@ -12,21 +13,37 @@ import FloorMap from './components/FloorMap';
 import AdminDashboard from './pages/AdminDashboard';
 import QRCodeGen from './components/QRCodeGen'; 
 
+import EventBanner from './components/EventBanner';
 import EventBoard from './pages/EventBoard';
 import EventDetail from './pages/EventDetail';
 import AdminEvents from './pages/AdminEvents';
 import BookSearch from './pages/BookSearch'; 
-import AdminSearch from './pages/AdminSearch'; // 🌟 [추가된 부분] 관리자 검색 모듈 임포트
+import AdminSearch from './pages/AdminSearch';
 
 import { useLibraryData } from './hooks/useLibraryData';
 import { useUserSession } from './hooks/useUserSession';
 
 import RankingPage from './pages/RankingPage';
+import RankingBanner from './components/RankingBanner';
 import FloatingChatbot from './components/FloatingChatbot';
 import { handleLibraryAction } from './api/libraryService'; 
 import { updateSeatsLayout } from './api/seatApi';
 
 const floorTitles = { '1층': '1층 열람실', '2층': '2층 집중구역', '4층': '4층 스터디룸' };
+
+const getNotificationText = (action, seatLabel) => {
+  const label = seatLabel || '좌석';
+  switch (action) {
+    case 'RESERVE': return `✅ ${label} 예약이 완료되었습니다.`;
+    case 'CANCEL': return `🗑️ ${label} 예약이 취소되었습니다.`;
+    case 'NO_SHOW_CANCEL': return `🚨 ${label} 미입실로 예약이 취소되었습니다.`;
+    case 'CHECK_IN': return `📲 ${label} 입실이 확인되었습니다.`;
+    case 'RETURN': return `👋 ${label} 퇴실 처리되었습니다.`;
+    case 'AUTO_CHECKOUT': return `⏳ ${label} 이용 시간이 만료되어 자동 퇴실되었습니다.`;
+    case 'FORCE_EVICT': return `❌ ${label} 관리자에 의해 강제 퇴실되었습니다.`;
+    default: return `🔔 ${label}에 새로운 변경사항이 있습니다.`;
+  }
+};
 
 const timeOptions = [...Array(28).keys()].map(i => {
   const h = Math.floor(i / 2) + 9;
@@ -45,7 +62,8 @@ function App() {
   useUserSession(user); 
 
   const scrollRef = useRef(null);
-  const prevBooksRef = useRef({}); // 💡 도서 반납(여분 발생) 감지를 위한 캐시
+  const mapRef = useRef(null);
+  const prevBooksRef = useRef({});
 
   const [activeFloor, setActiveFloor] = useState('1층');
   const [viewMode, setViewMode] = useState('HOME'); 
@@ -55,6 +73,8 @@ function App() {
   const [boardTab, setBoardTab] = useState('NOTICE');
   
   const [systemAlert, setSystemAlert] = useState(null);
+  const [kakaoPopup, setKakaoPopup] = useState(null);
+  const initialNotifLoadRef = useRef(true);
 
   useEffect(() => {
     if (systemAlert) {
@@ -66,8 +86,8 @@ function App() {
   const [facilityStatus, setFacilityStatus] = useState({ '1층': 'AUTO', '2층': 'AUTO', '4층': 'AUTO' });
   const [todayReservations, setTodayReservations] = useState([]);
 
-  const ADMIN_IDS = ['pjy', 'admin', 'manager', '1111111', '관리자', '2212020']; 
-  const isAdmin = (currentUserData && (ADMIN_IDS.includes(String(currentUserData.studentNo)) || currentUserData.role === 'MANAGER')) || 
+  const ADMIN_IDS = ['pjy', 'admin', 'manager', '1111111', '관리자', '2212020', 'tkdduf']; 
+  const isAdmin = (currentUserData && (ADMIN_IDS.includes(String(currentUserData.studentNo)) || currentUserData.role === 'MANAGER' || currentUserData.role === 'ADMIN')) || 
                   (user && user.email && ADMIN_IDS.includes(user.email.split('@')[0]));
 
   const [currentTimeString, setCurrentTimeString] = useState(new Date().toTimeString().substring(0, 5));
@@ -91,7 +111,7 @@ function App() {
     return () => unsub();
   }, [user]);
 
-  // 🔔 [신규 핵심 기능] 예약한 도서가 반납되어 여분이 생겼을 때 실시간 알람 트리거
+  // 🔔 예약한 도서 반납(여분 발생) 감지 알림 로직 (에디님 핵심 기능 통합)
   useEffect(() => {
     if (!user) return;
     const myId = currentUserData?.studentNo || user?.email?.split('@')[0] || user?.uid;
@@ -103,11 +123,9 @@ function App() {
         const prevAvail = prevBooksRef.current[bookId];
         const currAvail = book.availableQuantity ?? 0;
 
-        // 내가 이 책을 예약한 사람 명단에 있는지 확인
         const reservations = Array.isArray(book.reservations) ? book.reservations : [];
         const isReservedByMe = reservations.some(r => r.userId === user.email || r.studentNo === myId || r.uid === user.uid);
 
-        // 이전에 여분이 0권이었다가 방금 1권 이상으로 늘어났다면 (반납 발생!)
         if (isReservedByMe && prevAvail !== undefined && prevAvail === 0 && currAvail > 0) {
           const msg = `📚 예약하신 [${book.title}] 도서가 반납되어 대출 가능한 여분이 생겼습니다! 지금 도서관에서 대출해 주세요.`;
           setSystemAlert(msg);
@@ -120,6 +138,41 @@ function App() {
 
     return () => unsubBooks();
   }, [user, currentUserData]);
+
+  // 💬 카카오톡 도서 알림(대출전환/반납/연체패널티) 실시간 수신 리스너 (팀원 기능 통합)
+  useEffect(() => {
+    if (!user) return;
+    const emailPrefix = user.email ? user.email.split('@')[0] : '';
+    const myStuNo = currentUserData?.studentNo || user.studentNo || emailPrefix;
+
+    const unsubKakao = onSnapshot(collection(db, 'Notifications'), (snap) => {
+      if (initialNotifLoadRef.current) {
+        initialNotifLoadRef.current = false;
+        return;
+      }
+      snap.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const data = change.doc.data();
+          const isMine =
+            isAdmin ||
+            (user.uid && data.uid === user.uid) ||
+            (user.email && data.userId === user.email) ||
+            (emailPrefix && (data.userId === emailPrefix || String(data.studentNo) === emailPrefix)) ||
+            (myStuNo && String(data.studentNo) === String(myStuNo));
+
+          if (isMine) {
+            setKakaoPopup({
+              title: data.title || '💬 카카오톡 알림톡',
+              message: data.message || '',
+              phone: data.phone || currentUserData?.phone || '010-1234-5678'
+            });
+            setTimeout(() => setKakaoPopup(null), 7000);
+          }
+        }
+      });
+    });
+    return () => unsubKakao();
+  }, [user, currentUserData, isAdmin]);
 
   const [systemSettings, setSystemSettings] = useState(null);
   useEffect(() => {
@@ -147,10 +200,10 @@ function App() {
   const isMobile = windowWidth < 950; 
   const isSmallMobile = windowWidth < 600;
 
+  const [showRankingBanner, setShowRankingBanner] = useState(true);
   const [selectedEvent, setSelectedEvent] = useState(null);
   
   useEffect(() => {
-    // 🌟 [추가된 부분] 관리자가 아닌 사용자가 ADMIN_SEARCH에 접근하지 못하도록 보안 로직 추가
     if (user && !isAdmin && (viewMode === 'USERS' || viewMode === 'SCANNER' || viewMode === 'EVENTS_ADMIN' || viewMode === 'ADMIN_SEARCH')) {
       setViewMode('HOME');
     }
@@ -175,7 +228,23 @@ function App() {
   }, [user]);
 
   const [notifications, setNotifications] = useState([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [lastReadTime, setLastReadTime] = useState(0);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    const stored = localStorage.getItem(`lastRead_${user.email}`);
+    if (stored) {
+      setLastReadTime(parseInt(stored, 10));
+    } else {
+      const now = Date.now();
+      setLastReadTime(now);
+      localStorage.setItem(`lastRead_${user.email}`, now.toString());
+    }
+  }, [user]);
+
   const [selectedDate, setSelectedDate] = useState(startOfDay(new Date()));
+  const [calendarMonth, setCalendarMonth] = useState(selectedDate);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("11:00");
   const [showFullCalendar, setShowFullCalendar] = useState(false);
@@ -196,12 +265,51 @@ function App() {
     }
   }, []);
 
+  const [penaltyAlert, setPenaltyAlert] = useState(null);
+  const weekDays = Array.from({ length: 7 }).map((_, i) => addDays(startOfDay(new Date()), i));
+  const [mapReservations, setMapReservations] = useState([]);
+
+  useEffect(() => {
+    if (!user) return; 
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const q = query(collection(db, 'Reservations'), where('date', '==', dateStr));
+    const unsub = onSnapshot(q, { includeMetadataChanges: true }, snap => setMapReservations(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+    return () => unsub();
+  }, [selectedDate, user]);
+
   const [myActiveTickets, setMyActiveTickets] = useState([]);
   useEffect(() => {
     if (!user) return;
     const unsub = onSnapshot(query(collection(db, 'Reservations'), where('userId', '==', user.email), where('status', 'in', ['RESERVED', 'OCCUPIED'])), { includeMetadataChanges: true }, snap => setMyActiveTickets(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     return () => unsub();
   }, [user]);
+
+  const isTodayMap = format(selectedDate, 'yyyy-MM-dd') === format(new Date(), 'yyyy-MM-dd');
+
+  const displaySeats = seats.map(seat => {
+    if (seat.status === 'DISABLED') return seat;
+    const allReservations = [...mapReservations, ...myActiveTickets];
+    const isOverlapped = allReservations.some(res => {
+      if (res.seatId !== seat.id || res.status === 'RETURNED' || res.status === 'CANCELLED') return false;
+      return startTime < res.endTime && endTime > res.startTime;
+    });
+    const currentActiveRes = allReservations.find(res => 
+      res.seatId === seat.id && 
+      res.status !== 'RETURNED' && 
+      res.status !== 'CANCELLED' &&
+      currentTimeString >= res.startTime && 
+      currentTimeString < res.endTime
+    );
+    let finalStatus = seat.status;
+    if (isTodayMap) {
+      if (currentActiveRes) finalStatus = currentActiveRes.status;
+      else if (seat.status === 'RESERVED' || seat.status === 'OCCUPIED') finalStatus = seat.status;
+      else finalStatus = isOverlapped ? 'RESERVED' : 'AVAILABLE';
+    } else {
+      finalStatus = isOverlapped ? 'RESERVED' : 'AVAILABLE';
+    }
+    return { ...seat, status: finalStatus };
+  });
 
   const myTicket = myActiveTickets.find(res => {
     const todayStr = format(new Date(), 'yyyy-MM-dd');
@@ -210,12 +318,114 @@ function App() {
     return true; 
   });
 
-  // ✅ [핵심 추가] QR 모달이 떠 있는 상태에서 키오스크 스캔이 완료되어 OCCUPIED로 바뀌면 모달을 자동으로 닫아줌
-  useEffect(() => {
-    if (showIdQR && myTicket && myTicket.status === 'OCCUPIED') {
-      setShowIdQR(false);
+  // 🚨 1인 1좌석 제한 방어 로직
+  const handleSeatSelect = (seat) => {
+    if (!seat) {
+      setSelectedSeat(null);
+      return;
     }
-  }, [myTicket, showIdQR]);
+    if (!isAdmin && myTicket) {
+      if (seat.id !== myTicket.seatId) {
+        setSystemAlert({
+          title: "🚫 이용 제한",
+          message: "1인 1좌석 원칙입니다.\n이미 예약하거나 이용 중인 좌석이 있습니다."
+        });
+        return;
+      }
+    }
+    setSelectedSeat(seat);
+  };
+
+  const prevStatusRef = useRef(myTicket?.status);
+  useEffect(() => {
+    const prevStatus = prevStatusRef.current;
+    const currentStatus = myTicket?.status;
+
+    if (showIdQR && currentStatus === 'OCCUPIED') {
+      setShowIdQR(false);
+      if (prevStatus === 'RESERVED' && myTicket.userId === user?.email) {
+        setViewMode('MAP');
+        setTimeout(() => {
+          const currentSeat = seats.find(s => s.id === myTicket.seatId);
+          if (currentSeat) {
+            setIsBookingMode(true);
+            setSelectedSeat(currentSeat);
+            setForceCleanCheck(true);
+          }
+        }, 100);
+      }
+    }
+    prevStatusRef.current = currentStatus;
+  }, [myTicket, showIdQR, seats, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(collection(db, 'Log'), (snap) => {
+      const myId = user.email ? user.email.split('@')[0] : '';
+      const logs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter(log => {
+          const logUid = log.uid ? String(log.uid).split('@')[0] : '';
+          const logStuNo = log.studentNo ? String(log.studentNo) : '';
+          const isMyLog = (myId && logUid === myId) || (myId && logStuNo === myId);
+          return isMyLog || (isAdmin && ['USER_REPORTED', 'CHECK_IN_CLEAN_REPORT', 'REPORT_SEAT'].includes(log.action));
+        })
+        .sort((a, b) => getTime(b.timestamp || b.createdAt) - getTime(a.timestamp || a.createdAt));
+      setNotifications(logs);
+    });
+    return () => unsub();
+  }, [user, isAdmin]);
+
+  const pendingReportsCount = isAdmin ? notifications.filter(n => {
+    const act = n.action || '';
+    return ['USER_REPORTED', 'CHECK_IN_CLEAN_REPORT', 'REPORT_SEAT'].includes(act) || act.includes('REPORT');
+  }).length : 0;
+
+  useEffect(() => {
+    if (!user || notifications.length === 0 || isAdmin) return;
+    const readPenalties = JSON.parse(localStorage.getItem(`read_penalties_${user.email}`) || '[]');
+    const myId = user.email.split('@')[0];
+    const unreadAlert = notifications.find(n => {
+      const logUid = n.uid ? String(n.uid).split('@')[0] : '';
+      const logStuNo = n.studentNo ? String(n.studentNo) : '';
+      const isTargetUser = (myId && logUid === myId) || (myId && logStuNo === myId);
+      const isAlertAction = ['ADMIN_PENALTY', 'USER_REPORTED'].includes(n.action);
+      return isAlertAction && isTargetUser && !readPenalties.includes(n.id);
+    });
+    if (unreadAlert) setPenaltyAlert(unreadAlert);
+  }, [notifications, user, isAdmin]);
+
+  useEffect(() => {
+    if (!user) return;
+    const notifyRef = collection(db, "User", user.email.split('@')[0], "notifications");
+    const q = query(notifyRef, where("read", "==", false));
+    const unsub = onSnapshot(q, (snap) => {
+      snap.forEach((doc) => {
+        const data = doc.data();
+        setSystemAlert({ title: "🚨 알림", message: data.message });
+        updateDoc(doc.ref, { read: true });
+      });
+    });
+    return () => unsub();
+  }, [user]);
+
+  const handleDismissPenalty = () => {
+    if (!penaltyAlert) return;
+    const readPenalties = JSON.parse(localStorage.getItem(`read_penalties_${user.email}`) || '[]');
+    readPenalties.push(penaltyAlert.id);
+    localStorage.setItem(`read_penalties_${user.email}`, JSON.stringify(readPenalties));
+    setPenaltyAlert(null);
+  };
+
+  const unreadCount = notifications.filter(n => getTime(n.timestamp || n.createdAt) > lastReadTime).length;
+  
+  const toggleNotifications = () => {
+    setShowNotifications(!showNotifications);
+    if (!showNotifications) {
+      const now = Date.now();
+      setLastReadTime(now);
+      localStorage.setItem(`lastRead_${user?.email}`, now.toString());
+    }
+  };
 
   const getRealSeat = () => seats.find(s => s.id === myTicket?.seatId) || { id: myTicket?.seatId };
   
@@ -239,6 +449,32 @@ function App() {
       const startIdx = timeOptions.indexOf(newStart);
       if (startIdx < timeOptions.length - 1) setEndTime(timeOptions[startIdx + 1]);
     }
+  };
+
+  const renderCalendar = () => {
+    const monthStart = startOfMonth(calendarMonth);
+    const monthEnd = endOfMonth(monthStart);
+    const startDate = startOfWeek(monthStart);
+    const endDate = endOfWeek(monthEnd);
+    const calendarDays = eachDayOfInterval({ start: startDate, end: endDate });
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px' }}>
+        {['일','월','화','수','목','금','토'].map((d, i) => (
+          <div key={d} style={{ textAlign:'center', fontWeight:'900', color: i === 0 ? '#dc2626' : i === 6 ? '#2563eb' : '#0f172a', fontSize:'0.85rem', paddingBottom: '10px' }}>{d}</div>
+        ))}
+        {calendarDays.map((day, i) => {
+          const isSelected = isSameDay(day, selectedDate);
+          const isCurrentMonth = isSameMonth(day, monthStart);
+          const isDisabled = isPast(day) && !isSameDay(day, new Date());
+          return (
+            <button key={i} disabled={isDisabled} onClick={() => { setSelectedDate(startOfDay(day)); setShowFullCalendar(false); }} style={{ aspectRatio: '1', border: 'none', borderRadius: '12px', cursor: isDisabled ? 'default' : 'pointer', background: isSelected ? '#2563eb' : 'transparent', color: isSelected ? '#fff' : isDisabled ? '#cbd5e1' : !isCurrentMonth ? '#94a3b8' : '#000000', fontWeight: isSelected ? '900' : '700', fontSize: '1rem', position: 'relative' }}>
+              {format(day, 'd')}
+            </button>
+          );
+        })}
+      </div>
+    );
   };
 
   const getFinalStatus = (floor) => {
@@ -286,14 +522,55 @@ function App() {
       <div style={{ position: 'fixed', top: '-10%', left: '-10%', width: '500px', height: '500px', background: '#1e3a8a', borderRadius: '50%', filter: 'blur(150px)', opacity: 0.4, zIndex: 0 }} />
       <div style={{ position: 'fixed', bottom: '-10%', right: '-10%', width: '600px', height: '600px', background: '#0284c7', borderRadius: '50%', filter: 'blur(150px)', opacity: 0.3, zIndex: 0 }} />
 
-      {/* 🔔 시스템 및 도서 반납 실시간 알림 토스트 */}
-      {systemAlert && (
-        <div style={{ position: 'fixed', top: '85px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(15, 23, 42, 0.95)', color: '#fff', padding: '16px 28px', borderRadius: '50px', fontWeight: '900', fontSize: '0.95rem', zIndex: 999999, boxShadow: '0 15px 35px rgba(0,0,0,0.5)', border: '1px solid #60a5fa', backdropFilter: 'blur(15px)', textAlign: 'center', maxWidth: '90%', wordBreak: 'keep-all' }}>
-          {systemAlert}
+      {/* 💬 실시간 카카오톡 알림톡 플로팅 팝업 */}
+      {kakaoPopup && (
+        <div style={{
+          position: 'fixed', top: '24px', right: '24px', width: '360px', maxWidth: '90vw',
+          background: '#1e293b', border: '2px solid #FEE500', borderRadius: '18px',
+          boxShadow: '0 20px 45px rgba(0,0,0,0.65)', zIndex: 9999999, overflow: 'hidden'
+        }}>
+          <div style={{
+            background: '#FEE500', color: '#191919', padding: '10px 16px',
+            fontWeight: '900', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+          }}>
+            <span>💬 카카오톡 알림톡 도착 ({kakaoPopup.phone})</span>
+            <button onClick={() => setKakaoPopup(null)} style={{ background: 'none', border: 'none', fontWeight: '900', cursor: 'pointer', fontSize: '0.9rem' }}>✕</button>
+          </div>
+          <div style={{ padding: '16px', color: '#fff' }}>
+            <div style={{ fontWeight: '900', fontSize: '0.95rem', color: '#fde047', marginBottom: '6px' }}>{kakaoPopup.title}</div>
+            <div style={{ fontSize: '0.88rem', color: '#e2e8f0', lineHeight: '1.5', fontWeight: '600' }}>{kakaoPopup.message}</div>
+          </div>
         </div>
       )}
 
-      {/* 📲 [완벽 복구] QR 인증하기 & 모바일 출입증 모달 팝업 */}
+      {/* 🔔 시스템 및 도서 반납 실시간 알림 (문자열/객체 모두 완벽 호환) */}
+      {systemAlert && (
+        typeof systemAlert === 'string' ? (
+          <div style={{ position: 'fixed', top: '85px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(15, 23, 42, 0.95)', color: '#fff', padding: '16px 28px', borderRadius: '50px', fontWeight: '900', fontSize: '0.95rem', zIndex: 999999, boxShadow: '0 15px 35px rgba(0,0,0,0.5)', border: '1px solid #60a5fa', backdropFilter: 'blur(15px)', textAlign: 'center', maxWidth: '90%', wordBreak: 'keep-all' }}>
+            {systemAlert}
+          </div>
+        ) : (
+          <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0, 0, 0, 0.6)', zIndex: 9999999, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+            <div style={{ background: '#fff', padding: '40px', borderRadius: '24px', textAlign: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.5)', border: '3px solid #2563eb', maxWidth: '350px', width: '90%' }}>
+              <div style={{ fontSize: '3rem', marginBottom: '15px' }}>✅</div>
+              <h2 style={{ margin: '0 0 10px 0', fontSize: '1.4rem', fontWeight: '900', color: '#0f172a' }}>{systemAlert.title}</h2>
+              <p style={{ margin: 0, fontSize: '1.1rem', fontWeight: '700', whiteSpace: 'pre-wrap', color: '#475569' }}>{systemAlert.message}</p>
+            </div>
+          </div>
+        )
+      )}
+
+      {penaltyAlert && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0, 0, 0, 0.85)', zIndex: 999999, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px', boxSizing: 'border-box' }}>
+          <div style={{ background: '#fff', padding: '40px 30px', borderRadius: '24px', width: '100%', maxWidth: '400px', textAlign: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.5)' }}>
+            <div style={{ fontSize: '3.5rem', marginBottom: '10px' }}>🚨</div>
+            <h2 style={{ margin: '0 0 15px 0', color: '#dc2626', fontWeight: '900', fontSize: '1.6rem' }}>{penaltyAlert.action === 'ADMIN_PENALTY' ? '도서관 이용 제한 안내' : '도서관 이용 경고 안내'}</h2>
+            <button onClick={handleDismissPenalty} style={{ width: '100%', padding: '18px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: '14px', fontWeight: '900', fontSize: '1.1rem', cursor: 'pointer', boxShadow: '0 8px 20px rgba(220, 38, 38, 0.3)' }}>내용을 확인했습니다</button>
+          </div>
+        </div>
+      )}
+
+      {/* 📲 QR 인증하기 & 모바일 출입증 모달 팝업 */}
       {showIdQR && (
         <div onClick={handleCloseIdQR} style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', zIndex: 999999, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px', boxSizing: 'border-box' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: 'rgba(15, 23, 42, 0.95)', border: '1px solid rgba(96, 165, 250, 0.4)', borderRadius: '28px', padding: '35px 25px', width: '100%', maxWidth: '380px', textAlign: 'center', boxShadow: '0 25px 50px rgba(0,0,0,0.6)', position: 'relative' }}>
@@ -358,24 +635,55 @@ function App() {
       `}</style>
 
       {/* 상단 네비게이션 바 */}
-      <header className="glass-nav" style={{ padding: '15px 5%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <header className="glass-nav" style={{ padding: '15px 5%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
         <h2 onClick={() => { setViewMode('HOME'); window.scrollTo({top:0, behavior:'smooth'}); }} style={{ margin: 0, color: '#fff', fontWeight: '900', fontSize: '1.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <svg fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="#60a5fa" style={{ width: '26px', height: '26px' }}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" /></svg>
           SMART LIB
         </h2>
         
-        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '10px' : '15px' }}>
-          {isAdmin && !isSmallMobile && (
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <button onClick={() => setViewMode('USERS')} style={{ background: 'transparent', color: '#94a3b8', border: 'none', fontWeight: '700', cursor: 'pointer' }}>회원관리</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '10px' : '15px', flexWrap: 'wrap' }}>
+          {isAdmin && (
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <button onClick={() => setViewMode('USERS')} style={{ position: 'relative', background: 'transparent', color: viewMode === 'USERS' ? '#60a5fa' : '#94a3b8', border: 'none', fontWeight: '700', cursor: 'pointer' }}>
+                회원관리
+                {pendingReportsCount > 0 && <span style={{ position: 'absolute', top: '-4px', right: '-6px', width: '8px', height: '8px', background: '#ef4444', borderRadius: '50%' }} />}
+              </button>
               
-              {/* 🌟 [추가된 부분] 관리자 배너에 '검색관리' 버튼 추가 */}
-              <button onClick={() => setViewMode('ADMIN_SEARCH')} style={{ background: 'transparent', color: '#94a3b8', border: 'none', fontWeight: '700', cursor: 'pointer' }}>검색관리</button>
+              <button onClick={() => setViewMode('ADMIN_SEARCH')} style={{ background: 'transparent', color: viewMode === 'ADMIN_SEARCH' ? '#60a5fa' : '#94a3b8', border: 'none', fontWeight: '700', cursor: 'pointer' }}>검색관리</button>
               
-              <button onClick={() => setViewMode('EVENTS_ADMIN')} style={{ background: 'transparent', color: '#94a3b8', border: 'none', fontWeight: '700', cursor: 'pointer' }}>시스템관리</button>
+              <button onClick={() => setViewMode('EVENTS_ADMIN')} style={{ background: 'transparent', color: viewMode === 'EVENTS_ADMIN' ? '#60a5fa' : '#94a3b8', border: 'none', fontWeight: '700', cursor: 'pointer' }}>시스템관리</button>
               <button onClick={() => setViewMode('SCANNER')} style={{ background: 'transparent', color: '#60a5fa', border: 'none', fontWeight: '800', cursor: 'pointer' }}>QR스캐너</button>
             </div>
           )}
+
+          {/* 🔔 알림 종 아이콘 */}
+          <div style={{ position: 'relative' }}>
+            <button onClick={toggleNotifications} style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', width: '36px', height: '36px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="#e2e8f0" style={{ width: '18px', height: '18px' }}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+              </svg>
+              {unreadCount > 0 && <span style={{ position: 'absolute', top: '-2px', right: '-2px', background: '#ef4444', color: '#fff', fontSize: '0.65rem', fontWeight: '900', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%' }}>{unreadCount > 9 ? '9+' : unreadCount}</span>}
+            </button>
+            {showNotifications && (
+              <div style={{ position: 'absolute', top: '45px', right: isMobile ? '-50px' : '0', width: '300px', background: '#0f172a', borderRadius: '16px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.15)', zIndex: 1000, overflow: 'hidden' }}>
+                <div style={{ padding: '15px', background: 'rgba(255,255,255,0.05)', borderBottom: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff' }}>
+                  <h4 style={{ margin: '0', fontSize: '0.95rem', fontWeight: '900' }}>새로운 알림</h4>
+                  <span style={{ fontSize: '0.8rem', cursor: 'pointer', fontWeight: '700', color: '#94a3b8' }} onClick={() => setShowNotifications(false)}>닫기 ✕</span>
+                </div>
+                <div style={{ maxHeight: '300px', overflowY: 'auto', padding: '10px' }}>
+                  {notifications.length === 0 ? <p style={{ textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem', padding: '20px 0', margin: 0, fontWeight: '700' }}>새로운 알림이 없습니다.</p> : notifications.map(noti => (
+                    <div key={noti.id} style={{ padding: '10px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: ((noti.timestamp || noti.createdAt)?.toDate?.().getTime() || 0) > lastReadTime ? 'rgba(59,130,246,0.15)' : 'transparent', borderRadius: '8px' }}>
+                      <div style={{ fontSize: '0.85rem', color: '#e2e8f0', fontWeight: '700', marginBottom: '4px' }}>
+                         {noti.action === 'ADMIN_PENALTY' ? `🚨 [패널티 조치] 사유: ${noti.result}` : (noti.action === 'USER_REPORTED' && isAdmin ? `🚨 [신고 접수] ${noti.seatLabel}사유: \n${noti.result || '알 수 없음'}` : getNotificationText(noti.action, noti.seatLabel))}
+                      </div>
+                      <div style={{ fontSize: '0.7rem', color: '#94a3b8', fontWeight: '600' }}>{(noti.timestamp || noti.createdAt)?.toDate ? (noti.timestamp || noti.createdAt).toDate().toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '방금 전'}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           <span style={{ color: '#e2e8f0', fontSize: '0.9rem', fontWeight: '600' }}>
             {isAdmin ? '관리자' : (currentUserData?.name || user?.displayName || user?.email?.split('@')[0])}님
           </span>
@@ -396,13 +704,14 @@ function App() {
         {viewMode === 'MYPAGE' && <MyPage user={user} currentUserData={currentUserData} setViewMode={setViewMode} />}
         {viewMode === 'SCANNER' && isAdmin && <ScannerPage setViewMode={setViewMode} setSystemAlert={setSystemAlert} />}
         {viewMode === 'RANKING' && <RankingPage onBack={() => setViewMode('HOME')} user={user}/>}
-        {viewMode === 'SEARCH' && <BookSearch onBack={() => setViewMode('HOME')} user={user} currentUserData={currentUserData} isAdmin={isAdmin} />}
+        
+        {/* 🌟 에디님의 도서 검색 및 관리자 검색 모듈 연결 */}
+        {(viewMode === 'SEARCH' || viewMode === 'BOOKS') && <BookSearch onBack={() => setViewMode('HOME')} user={user} currentUserData={currentUserData} isAdmin={isAdmin} />}
+        {viewMode === 'ADMIN_SEARCH' && isAdmin && <AdminSearch />}
+        
         {viewMode === 'EVENTS' && <EventBoard initialTab={boardTab} onBack={() => setViewMode('HOME')} onSelectEvent={(ev) => { setSelectedEvent(ev); setViewMode('EVENT_DETAIL'); }} onSelectNotice={(notice) => { setSelectedEvent({ ...notice, _type: 'NOTICE' }); setViewMode('EVENT_DETAIL'); }} />}
         {viewMode === 'EVENT_DETAIL' && <EventDetail event={selectedEvent} onBack={() => setViewMode('EVENTS')} />}
         {viewMode === 'EVENTS_ADMIN' && isAdmin && <AdminEvents />}
-        
-        {/* 🌟 [추가된 부분] 관리자 검색 모듈 라우팅 연결 */}
-        {viewMode === 'ADMIN_SEARCH' && isAdmin && <AdminSearch />}
 
         {(viewMode === 'HOME' || viewMode === 'MAP') && (
           <>
@@ -432,7 +741,9 @@ function App() {
                 </section>
 
                 <div ref={scrollRef} style={{ width: '100%', maxWidth: '1200px', margin: '0 auto', padding: '40px 5%' }}>
-                  <section style={{ marginBottom: '60px' }}>
+                  {showRankingBanner && <RankingBanner onEnter={() => setViewMode('RANKING')} onClose={() => setShowRankingBanner(false)} />}
+
+                  <section style={{ marginBottom: '60px', marginTop: '20px' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '20px' }}>
                       {[
                         { mode: 'SEARCH', label: '도서 검색', svg: <svg fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" style={{ width: '32px', height: '32px' }}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg> },
@@ -498,7 +809,7 @@ function App() {
                     </div>
                   </section>
 
-                  <section className="glass-card">
+                  <section className="glass-card" style={{ marginBottom: '40px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', paddingBottom: '15px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
                       <h3 style={{ margin: 0, fontSize: '1.4rem', fontWeight: '900', color: '#fff' }}>새로운 소식</h3>
                       <button onClick={() => { setBoardTab('NOTICE'); setViewMode('EVENTS'); }} style={{ background: 'transparent', color: '#60a5fa', border: 'none', fontSize: '0.9rem', fontWeight: '700', cursor: 'pointer' }}>더 보기 →</button>
@@ -517,13 +828,15 @@ function App() {
                       )}
                     </div>
                   </section>
+
+                  <EventBanner onSeeAll={() => { setBoardTab('EVENT'); setViewMode('EVENTS'); }} onSelectEvent={(ev) => { setSelectedEvent(ev); setViewMode('EVENT_DETAIL'); }} />
                 </div>
               </>
             )}
 
-            {/* 🗺️ MAP 뷰 렌더링 (시간 선택창 & 층별 탭 밸런스 대폭 업그레이드) */}
+            {/* 🗺️ MAP 뷰 렌더링 (주간 날짜 선택 + 시간 선택 + 층별 탭 + 1인1좌석 제한 완벽 결합) */}
             {viewMode === 'MAP' && (
-              <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '25px 5%' }}>
+              <div ref={mapRef} style={{ maxWidth: '1200px', margin: '0 auto', padding: '25px 5%' }}>
                 <div className="glass-card" style={{ marginBottom: '25px', padding: isSmallMobile ? '20px' : '28px 32px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '22px' }}>
                     <button onClick={() => setViewMode('HOME')} style={{ padding: '12px 20px', background: 'rgba(255,255,255,0.1)', color: '#fff', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.2)', fontWeight: '800', fontSize: '0.95rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -533,6 +846,21 @@ function App() {
                       {isBookingMode ? '📅 실시간 좌석 예약' : '🗺️ 도서관 층별 배치도'}
                     </h2>
                   </div>
+
+                  {isBookingMode && (
+                    <div style={{ display: 'flex', flexWrap: 'nowrap', gap: '8px', marginBottom: '20px', overflowX: 'auto', paddingBottom: '8px' }}>
+                      {weekDays.map((date, idx) => {
+                        const isSel = format(selectedDate, 'yyMMdd') === format(date, 'yyMMdd');
+                        return (
+                          <button key={idx} onClick={() => setSelectedDate(startOfDay(date))} style={{ flex: '1 0 65px', minWidth: '65px', padding: '10px 5px', borderRadius: '14px', border: isSel ? '1px solid #60a5fa' : '1px solid rgba(255,255,255,0.1)', background: isSel ? 'linear-gradient(135deg, #2563eb, #3b82f6)' : 'rgba(255,255,255,0.05)', color: '#fff', cursor: 'pointer', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.78rem', opacity: 0.8 }}>{format(date, 'E', { locale: ko })}</div>
+                            <div style={{ fontSize: '1.05rem', fontWeight: '900' }}>{format(date, 'd')}</div>
+                          </button>
+                        );
+                      })}
+                      <button onClick={() => setShowFullCalendar(true)} style={{ flex: '0 0 80px', padding: '10px', borderRadius: '14px', border: '1px dashed rgba(255,255,255,0.3)', background: 'transparent', color: '#93c5fd', fontWeight: '800', cursor: 'pointer', whiteSpace: 'nowrap' }}>📅 달력</button>
+                    </div>
+                  )}
                   
                   {isBookingMode && (
                     <div style={{ display: 'grid', gridTemplateColumns: isSmallMobile ? '1fr' : '1fr 1fr', gap: '16px', marginBottom: '20px', background: 'rgba(0,0,0,0.25)', padding: '18px', borderRadius: '18px', border: '1px solid rgba(255,255,255,0.08)' }}>
@@ -565,10 +893,24 @@ function App() {
                   </div>
                 </div>
 
-                <FloorMap activeFloor={activeFloor} title={floorTitles[activeFloor]} seats={seats} user={user} isAdmin={isAdmin} currentUserData={currentUserData} viewMode={viewMode} now={new Date()} setSelectedSeat={setSelectedSeat} onUpdateSeats={updateSeatsLayout} onDeleteSeat={handleDeleteSeat} />
+                <FloorMap activeFloor={activeFloor} title={floorTitles[activeFloor]} seats={displaySeats} user={user} isAdmin={isAdmin} currentUserData={currentUserData} viewMode={viewMode} now={new Date()} setSelectedSeat={handleSeatSelect} onUpdateSeats={updateSeatsLayout} onDeleteSeat={handleDeleteSeat} />
                 
                 {isBookingMode && (
                   <SeatModal selectedSeat={selectedSeat} setSelectedSeat={setSelectedSeat} user={user} isAdmin={isAdmin} currentUserData={currentUserData} selectedDate={selectedDate} setSelectedDate={setSelectedDate} startTime={startTime} endTime={endTime} showFullCalendar={showFullCalendar} setShowFullCalendar={setShowFullCalendar} setSystemAlert={setSystemAlert} setShowIdQR={setShowIdQR} forceCleanCheck={forceCleanCheck} setForceCleanCheck={setForceCleanCheck} />
+                )}
+
+                {isBookingMode && showFullCalendar && (
+                  <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(15, 23, 42, 0.7)', zIndex: 10000, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}>
+                    <div style={{ background: '#fff', padding: '30px', borderRadius: '32px', width: '100%', maxWidth: '380px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <button onClick={() => setCalendarMonth(subMonths(calendarMonth, 1))} style={{ border:'none', background:'#f1f5f9', width:36, height:36, borderRadius:'50%', color: '#0f172a', fontWeight: '900' }}>◀</button>
+                        <h3 style={{ margin: 0, fontWeight: '900', color: '#0f172a' }}>{format(calendarMonth, 'yyyy년 M월')}</h3>
+                        <button onClick={() => setCalendarMonth(addMonths(calendarMonth, 1))} style={{ border:'none', background:'#f1f5f9', width:36, height:36, borderRadius:'50%', color: '#0f172a', fontWeight: '900' }}>▶</button>
+                      </div>
+                      {renderCalendar()}
+                      <button onClick={() => setShowFullCalendar(false)} style={{ width:'100%', marginTop:'20px', padding:'16px', border:'none', background:'#f1f5f9', borderRadius:'16px', fontWeight:'900', color: '#0f172a', cursor: 'pointer' }}>닫기</button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -627,6 +969,4 @@ function App() {
 }
 
 export default App;
-
-
 
