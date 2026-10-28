@@ -379,6 +379,10 @@ function App() {
           <span style={{ color: '#e2e8f0', fontSize: '0.9rem', fontWeight: '600' }}>
             {isAdmin ? '관리자' : (currentUserData?.name || user?.displayName || user?.email?.split('@')[0])}님
           </span>
+
+          <button onClick={() => setViewMode('ADMIN_SEARCH')} style={{ background: 'transparent', color: viewMode === 'ADMIN_SEARCH' ? '#60a5fa' : '#94a3b8', border: 'none', fontWeight: '700', cursor: 'pointer' }}>
+      검색관리
+    </button>
           
           <button onClick={() => setViewMode(viewMode === 'MYPAGE' ? 'HOME' : 'MYPAGE')} style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '10px', padding: '8px 16px', fontSize: '0.85rem', fontWeight: '700', cursor: 'pointer' }}>
             {viewMode === 'MYPAGE' ? '홈으로' : '마이페이지'}
@@ -387,6 +391,10 @@ function App() {
           <button onClick={async () => { if (window.confirm("로그아웃 하시겠습니까?")) await signOut(auth); }} style={{ background: 'rgba(239, 68, 68, 0.2)', color: '#fca5a5', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '10px', padding: '8px 16px', fontSize: '0.85rem', fontWeight: '700', cursor: 'pointer' }}>
             로그아웃
           </button>
+
+          
+
+          
         </div>
       </header>
 
@@ -626,4 +634,4 @@ function App() {
   );
 }
 
-export default App;
+export default App;   
