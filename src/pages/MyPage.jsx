@@ -385,3 +385,4 @@ const MyPage = ({ user, setViewMode }) => {
 };
 
 export default MyPage;
+

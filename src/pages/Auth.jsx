@@ -314,3 +314,4 @@ const Auth = ({ isExamPeriod }) => {
 };
 
 export default Auth;
+

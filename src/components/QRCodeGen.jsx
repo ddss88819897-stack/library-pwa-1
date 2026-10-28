@@ -163,3 +163,4 @@ function QRCodeGen({ studentId, userName }) {
 }
 
 export default QRCodeGen;
+
