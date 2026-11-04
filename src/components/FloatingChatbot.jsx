@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { collection, addDoc, serverTimestamp, getDocs, query, where } from 'firebase/firestore';
-import { db, auth } from '../firebase'; 
+import { db, auth } from '../firebase';
+import Icon from './Icon';
 
-export default function FloatingChatbot() {
+export default function FloatingChatbot({ raised = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([
     { sender: 'ai', text: '안녕하세요! 스마트 도서관 AI 사서입니다. 🤖\n자리 예약, 이용 수칙, 불편 신고 및 소명 등 어떤 문제든 말씀해 주시면 제가 직접 해결해 드리겠습니다!' }
@@ -34,10 +35,10 @@ export default function FloatingChatbot() {
     fetchKnowledge();
   }, []);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
+  const handleSend = (preset) => {
+    const userMsg = (typeof preset === 'string' ? preset : input).trim();
+    if (!userMsg || isTyping) return;
 
-    const userMsg = input;
     setMessages(prev => [...prev, { sender: 'user', text: userMsg }]);
     setInput('');
     setIsTyping(true);
@@ -85,7 +86,7 @@ export default function FloatingChatbot() {
           let dateStr = "오늘";
           if (dateMatch) dateStr = `${dateMatch[1]}월 ${dateMatch[2]}일`;
 
-          aiResponse = `🔍 실시간 예약 DB를 분석 중입니다...\n\n요청하신 **${dateStr} 스터디룸 예약 현황**입니다.\n\n[스터디룸 1]\n- 전 시간대 : ✅ 예약 가능\n\n[스터디룸 2]\n- 전 시간대 : ✅ 예약 가능\n\n예약을 진행하시려면 하단 메뉴의 '자리 예약' 탭을 이용해 주세요!`;
+          aiResponse = `🔍 실시간 예약 DB를 분석 중입니다...\n\n요청하신 **${dateStr} 스터디룸 예약 현황**입니다.\n\n[스터디룸 1]\n- 전 시간대 : ✅ 예약 가능\n\n[스터디룸 2]\n- 전 시간대 : ✅ 예약 가능\n\n예약을 진행하시려면 상단의 '좌석 예약' 메뉴를 이용해 주세요!`;
           foundInDB = true;
         }
 
@@ -115,7 +116,7 @@ export default function FloatingChatbot() {
           }
           // 💡 [신규 추가] 예약 취소 방법에 대한 답변
           else if (userMsg.includes("예약") && userMsg.includes("취소")) {
-            aiResponse = "좌석 예약 취소는 앱 하단의 **[내 예약 내역]** 메뉴에서 진행하실 수 있습니다. 📱\n예약 시간 10분 전까지 취소하지 않으시면 노쇼(No-Show) 패널티가 부과될 수 있으니 이용을 원치 않으시면 꼭 사전에 취소해 주세요!";
+            aiResponse = "좌석 예약 취소는 화면 하단의 **예약 티켓 카드 → [취소]** 버튼으로 진행하실 수 있습니다. 📱\n입실 시간 15분이 지나도록 QR 인증을 하지 않으면 노쇼로 자동 취소되고 패널티가 누적되니 이용을 원치 않으시면 꼭 사전에 취소해 주세요!";
           }
           else if (userMsg.includes("소명") || userMsg.includes("억울") || userMsg.includes("노쇼") || userMsg.includes("경고") || userMsg.includes("신고 당") || userMsg.includes("신고 및 소명")) {
             aiResponse = "패널티 조치나 신고로 많이 당황하셨겠어요. 😢\n번거롭게 직접 메뉴를 찾으실 필요 없이, **제가 바로 소명 접수를 도와드리고 담당자에게 즉시 전달해 드리겠습니다.**\n빠른 처리를 위해 아래 양식에 맞춰 사연을 적어주시겠어요?\n\n[접수 양식]\n- 이름 :\n- 학번(아이디) :\n- 발생한 좌석 번호 :\n- 발생 시간 :\n- 사유 :\n\n*(접수를 원치 않으시면 '취소'라고 입력해 주세요)*";
@@ -139,76 +140,75 @@ export default function FloatingChatbot() {
     }, 1500); 
   };
 
+  const quick = ['열람실 이용 수칙', '예약 취소 방법', '불편 신고하기', '패널티 소명'];
+
   return (
-    <div style={{ position: 'fixed', bottom: '30px', right: '30px', zIndex: 999999 }}>
+    <div className={`sl-bot ${raised ? 'raised' : ''}`}>
+      <style>{`
+        .sl-bot { position: fixed; right: 20px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 9997; transition: bottom .35s var(--ease); }
+        .sl-bot.raised { bottom: calc(220px + env(safe-area-inset-bottom)); }
+        .sl-bot-panel { width: min(380px, calc(100vw - 24px)); height: min(560px, calc(100svh - 140px)); display: flex; flex-direction: column; overflow: hidden; margin-bottom: 12px;
+          border-radius: 28px; background: linear-gradient(180deg, rgba(20,27,52,.97), rgba(10,14,30,.98)); border: 1px solid var(--line-strong);
+          box-shadow: 0 40px 90px -20px rgba(0,0,0,.85); animation: sl-pop .35s var(--ease); transform-origin: bottom right; }
+        .sl-bot-fab { width: 60px; height: 60px; border-radius: 20px; border: 0; cursor: pointer; display: grid; place-items: center; color: #fff; margin-left: auto;
+          background: var(--grad); box-shadow: var(--shadow-glow), inset 0 1px 0 rgba(255,255,255,.35); }
+        .sl-bot-fab:hover { transform: translateY(-2px) rotate(-4deg); }
+        @media (max-width: 860px) {
+          .sl-bot { right: 14px; bottom: calc(92px + env(safe-area-inset-bottom)); }
+          .sl-bot.raised { bottom: calc(270px + env(safe-area-inset-bottom)); }
+          .sl-bot-fab { width: 52px; height: 52px; border-radius: 18px; }
+        }
+        @media (max-width: 480px) { .sl-bot-panel { position: fixed; left: 12px; right: 12px; bottom: calc(92px + env(safe-area-inset-bottom)); width: auto; } }
+        .sl-typing span { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); margin: 0 2px; animation: sl-dot 1.2s infinite; }
+        .sl-typing span:nth-child(2) { animation-delay: .15s; } .sl-typing span:nth-child(3) { animation-delay: .3s; }
+        @keyframes sl-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .4; } 30% { transform: translateY(-4px); opacity: 1; } }
+      `}</style>
+
       {isOpen && (
-        <div style={{ width: '380px', height: '550px', background: '#fff', borderRadius: '24px', boxShadow: '0 20px 40px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', overflow: 'hidden', marginBottom: '15px', border: '1px solid #e2e8f0' }}>
-          
-          <div style={{ background: '#2563eb', padding: '16px 20px', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '1.8rem' }}>🤖</span>
-              <div>
-                <h4 style={{ margin: 0, fontWeight: 900, fontSize: '1.1rem' }}>스마트 도서관 AI</h4>
-                <p style={{ margin: 0, fontSize: '0.75rem', opacity: 0.8 }}>시연용 스마트 해결사</p>
-              </div>
+        <div className="sl-bot-panel">
+          <div style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid var(--line)', background: 'var(--grad-soft)' }}>
+            <span style={{ width: 40, height: 40, borderRadius: 14, display: 'grid', placeItems: 'center', background: 'var(--grad)', color: '#fff' }}><Icon name="sparkle" size={20} /></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 800 }}>AI 사서</div>
+              <div style={{ fontSize: '.76rem', color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--green)' }} />지금 응답 가능</div>
             </div>
-            <button onClick={() => setIsOpen(false)} style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: '1.5rem', cursor: 'pointer', padding: 0 }}>✕</button>
+            <button className="sl-icon-btn" onClick={() => setIsOpen(false)} aria-label="닫기"><Icon name="x" size={18} /></button>
           </div>
 
-          <div style={{ flex: 1, padding: '20px', overflowY: 'auto', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ flex: 1, padding: 16, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
             {messages.map((msg, idx) => (
               <div key={idx} style={{ display: 'flex', justifyContent: msg.sender === 'user' ? 'flex-end' : 'flex-start' }}>
                 <div style={{
-                  maxWidth: '80%', padding: '12px 16px', borderRadius: '16px', fontSize: '0.95rem', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'keep-all',
-                  background: msg.sender === 'user' ? '#2563eb' : '#fff',
-                  color: msg.sender === 'user' ? '#fff' : '#334155',
-                  boxShadow: msg.sender === 'user' ? 'none' : '0 2px 5px rgba(0,0,0,0.05)',
-                  border: msg.sender === 'user' ? 'none' : '1px solid #e2e8f0',
-                  borderBottomRightRadius: msg.sender === 'user' ? '4px' : '16px',
-                  borderBottomLeftRadius: msg.sender === 'ai' ? '4px' : '16px',
-                }}>
-                  {msg.text}
-                </div>
+                  maxWidth: '84%', padding: '11px 14px', borderRadius: 18, fontSize: '.92rem', lineHeight: 1.55, whiteSpace: 'pre-wrap',
+                  background: msg.sender === 'user' ? 'var(--grad)' : 'rgba(255,255,255,.06)',
+                  color: msg.sender === 'user' ? '#fff' : 'var(--text)',
+                  border: msg.sender === 'user' ? 'none' : '1px solid var(--line)',
+                  borderBottomRightRadius: msg.sender === 'user' ? 6 : 18,
+                  borderBottomLeftRadius: msg.sender === 'ai' ? 6 : 18,
+                }}>{msg.text.replace(/\*\*/g, '')}</div>
               </div>
             ))}
             {isTyping && (
-              <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-                <div style={{ background: '#fff', padding: '10px 14px', borderRadius: '16px', borderBottomLeftRadius: '4px', border: '1px solid #e2e8f0', color: '#94a3b8', fontSize: '0.85rem' }}>
-                  AI가 실시간 데이터를 검토 중입니다... 🔍
-                </div>
+              <div style={{ alignSelf: 'flex-start', padding: '12px 14px', borderRadius: 18, borderBottomLeftRadius: 6, background: 'rgba(255,255,255,.06)', border: '1px solid var(--line)' }} className="sl-typing"><span /><span /><span /></div>
+            )}
+            {messages.length === 1 && !isTyping && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                {quick.map(q => <button key={q} className="sl-chip blue" style={{ cursor: 'pointer' }} onClick={() => handleSend(q)}>{q}</button>)}
               </div>
             )}
             <div ref={messagesEndRef} />
           </div>
 
-          <div style={{ padding: '15px', background: '#fff', borderTop: '1px solid #e2e8f0', display: 'flex', gap: '10px' }}>
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-              placeholder={appealMode ? "내용을 적어주시거나 '취소'를 입력하세요." : "궁금한 점을 물어보세요!"}
-              style={{ flex: 1, padding: '12px 16px', borderRadius: '12px', border: '1px solid #cbd5e1', outline: 'none', background: '#f1f5f9', fontSize: '0.9rem', borderColor: appealMode ? '#3b82f6' : '#cbd5e1' }}
-            />
-            <button onClick={handleSend} disabled={isTyping} style={{ background: isTyping ? '#94a3b8' : '#2563eb', color: '#fff', border: 'none', borderRadius: '12px', padding: '0 16px', fontWeight: 900, cursor: isTyping ? 'not-allowed' : 'pointer', transition: '0.2s', whiteSpace: 'nowrap' }}>
-              전송
-            </button>
-          </div>
+          <form onSubmit={(e) => { e.preventDefault(); handleSend(); }} style={{ padding: 12, borderTop: '1px solid var(--line)', display: 'flex', gap: 8 }}>
+            <input className="sl-input" style={{ height: 46, borderColor: appealMode ? 'rgba(109,141,255,.7)' : undefined }} value={input} onChange={(e) => setInput(e.target.value)}
+              placeholder={appealMode ? "내용을 적거나 '취소'를 입력하세요" : '무엇이든 물어보세요'} />
+            <button type="submit" className="sl-btn primary" style={{ width: 46, height: 46, padding: 0 }} disabled={isTyping || !input.trim()} aria-label="전송"><Icon name="send" size={18} /></button>
+          </form>
         </div>
       )}
 
       {!isOpen && (
-        <button
-          onClick={() => setIsOpen(true)}
-          style={{
-            width: '65px', height: '65px', borderRadius: '50%', background: '#2563eb', border: 'none', color: '#fff', fontSize: '2rem', cursor: 'pointer',
-            boxShadow: '0 10px 25px rgba(37,99,235,0.4)', display: 'flex', justifyContent: 'center', alignItems: 'center', transition: 'transform 0.2s'
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
-          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-        >
-          💬
-        </button>
+        <button className="sl-bot-fab" onClick={() => setIsOpen(true)} aria-label="AI 사서 열기"><Icon name="chat" size={26} stroke={2} /></button>
       )}
     </div>
   );

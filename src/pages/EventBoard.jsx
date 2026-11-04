@@ -39,7 +39,7 @@ export default function EventBoard({ initialTab = 'NOTICE', onBack, onSelectEven
     if (dateValue.toDate) return format(dateValue.toDate(), 'yyyy-MM-dd');
     try {
       return format(new Date(dateValue), 'yyyy-MM-dd');
-    } catch (e) {
+    } catch {
       return 'Invalid Date';
     }
   };

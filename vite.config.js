@@ -7,17 +7,18 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+      includeAssets: ['favicon.svg', 'icon.svg'],
       manifest: {
         name: '스마트 도서관 예약시스템',
         short_name: '스마트도서관',
         description: '빠르고 간편한 대학 도서관 좌석 예약 앱',
-        theme_color: '#2563eb',
-        background_color: '#ffffff',
+        theme_color: '#05070f',
+        background_color: '#05070f',
+        lang: 'ko',
+        start_url: '/',
         display: 'standalone',
         icons: [
-          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' }
+          { src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }
         ]
       }
     })
@@ -30,6 +31,15 @@ export default defineConfig({
     // 💡 프록시 설정은 vercel dev가 알아서 하므로 삭제했습니다!
   },
   build: {
-    sourcemap: false
+    sourcemap: false,
+    chunkSizeWarningLimit: 1600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage'],
+          charts: ['chart.js', 'react-chartjs-2'],
+        }
+      }
+    }
   }
 })

@@ -1,388 +1,260 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { collection, doc, onSnapshot, query, where, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase'; 
+import { db } from '../firebase';
 import QRCodeGen from '../components/QRCodeGen';
+import Icon from '../components/Icon';
+import { toDate, toMillis, emailPrefix } from '../utils/userDoc';
 
-const MyPage = ({ user, setViewMode }) => {
-  const [userData, setUserData] = useState(null);
-  const [userDocId, setUserDocId] = useState(null);
+const DAY = ['일', '월', '화', '수', '목', '금', '토'];
+const fmtMin = (m) => {
+  const h = Math.floor(m / 60); const r = m % 60;
+  return `${h ? `${h}시간 ` : ''}${r || !h ? `${r}분` : ''}`.trim();
+};
+
+const MyPage = ({ user, currentUserData, isAdmin, setViewMode, adminItems = [] }) => {
   const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [allBooks, setAllBooks] = useState([]);
   const [kakaoAlerts, setKakaoAlerts] = useState([]);
   const [phoneInput, setPhoneInput] = useState('');
   const [editingPhone, setEditingPhone] = useState(false);
-  const [loading, setLoading] = useState(true);
 
-  const isMobile = window.innerWidth < 768;
-  const emailPrefix = user?.email ? user.email.split('@')[0] : '';
-  const myId = userData?.studentNo || user?.studentNo || emailPrefix || user?.uid || '';
+  const prefix = emailPrefix(user?.email);
+  const myStuNo = String(currentUserData?.studentNo || prefix || '');
+  const isMineRecord = (r) => (user?.uid && r.uid === user.uid) || (user?.email && r.userId === user.email) ||
+    (myStuNo && String(r.studentNo) === myStuNo) || (prefix && (r.studentNo === prefix || r.userId === prefix));
 
+  // 도서 대출/예약 현황 + 카카오 도서 알림함
   useEffect(() => {
     if (!user) return;
-
-    const unsubUser = onSnapshot(collection(db, 'User'), (snap) => {
-      const allUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const matched = allUsers.find(u => {
-        const uPrefix = u.email ? u.email.split('@')[0] : '';
-        return (
-          (user.uid && (u.id === user.uid || u.uid === user.uid)) ||
-          (user.studentNo && (String(u.studentNo) === String(user.studentNo) || u.id === String(user.studentNo))) ||
-          (user.email && u.email === user.email) ||
-          (emailPrefix && (uPrefix === emailPrefix || u.id === emailPrefix || String(u.studentNo) === emailPrefix))
-        );
-      });
-      if (matched) {
-        setUserData(matched);
-        setUserDocId(matched.id);
-        setPhoneInput(matched.phone || '010-1234-5678');
-      }
-    });
-
-    const unsubBooks = onSnapshot(collection(db, 'Books'), (snap) => {
-      setAllBooks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
+    const unsubBooks = onSnapshot(collection(db, 'Books'), (snap) => setAllBooks(snap.docs.map(d => ({ id: d.id, ...d.data() }))), () => {});
     const unsubNotifs = onSnapshot(collection(db, 'Notifications'), (snap) => {
-      const list = snap.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(n =>
-          (user.uid && n.uid === user.uid) ||
-          (user.email && n.userId === user.email) ||
-          (emailPrefix && (n.studentNo === emailPrefix || n.userId === emailPrefix)) ||
-          (userData?.studentNo && String(n.studentNo) === String(userData.studentNo))
-        )
-        .sort((a, b) => {
-          const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
-          const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
-          return tB - tA;
-        });
-      setKakaoAlerts(list);
-    });
-
-    const logsRef = collection(db, 'Log'); 
-    const unsubLogs = onSnapshot(logsRef, (logSnap) => {
-      const logList = logSnap.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(log => 
-          log.uid === user?.uid || 
-          log.uid === user?.email ||        
-          log.studentNo === user?.studentNo || 
-          log.studentNo === emailPrefix ||
-          log.studentNo === user?.name      
-        )
-        .sort((a, b) => {
-          const timeA = (a.timestamp || a.createdAt)?.toDate ? (a.timestamp || a.createdAt).toDate() : new Date(0);
-          const timeB = (b.timestamp || b.createdAt)?.toDate ? (b.timestamp || b.createdAt).toDate() : new Date(0);
-          return timeB - timeA;
-        });
-      setLogs(logList);
-      setLoading(false);
-    });
-
-    const myUserId = user?.email || user?.studentNo; 
-    const seatsRef = collection(db, 'Seat');
-    const q = query(seatsRef, where("userId", "==", myUserId));
-    const unsubSeat = onSnapshot(q, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === "modified") {
-          const seatData = change.doc.data();
-          if (seatData.status === "OCCUPIED") {
-            alert('✅ QR 인증 완료!\n자리 사용을 시작합니다.');
-            if (setViewMode) setViewMode('MAP');
-          }
-        }
-      });
-    });
-
-    return () => {
-      unsubUser();
-      unsubBooks();
-      unsubNotifs();
-      unsubLogs();
-      unsubSeat(); 
-    };
-  }, [user, setViewMode, userData?.studentNo]);
+      setKakaoAlerts(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(isMineRecord).sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)));
+    }, () => {});
+    return () => { unsubBooks(); unsubNotifs(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, myStuNo]);
 
   const handleSavePhone = async () => {
-    if (!userDocId) return alert("회원 정보를 찾을 수 없습니다.");
+    if (!currentUserData?.id) return alert('회원 정보를 찾을 수 없습니다.');
     try {
-      await updateDoc(doc(db, 'User', userDocId), { phone: phoneInput.trim() });
+      await updateDoc(doc(db, 'User', currentUserData.id), { phone: phoneInput.trim() });
       setEditingPhone(false);
-      alert(`✅ 카카오톡 도서 알림 수신 번호(${phoneInput.trim()})가 저장되었습니다!`);
-    } catch (e) {
-      alert("전화번호 저장 실패: " + e.message);
-    }
+      alert(`✅ 카카오톡 도서 알림 수신 번호(${phoneInput.trim()})가 저장되었습니다.`);
+    } catch (e) { alert('전화번호 저장 실패: ' + e.message); }
   };
 
-  const handleCancelMyReservation = async (book) => {
+  const handleCancelBookReservation = async (book) => {
     if (!window.confirm(`[${book.title}] 도서의 대출 예약을 취소하시겠습니까?`)) return;
     try {
-      const updated = (book.reservations || []).filter(r =>
-        r.userId !== user?.email && String(r.studentNo) !== String(myId) && r.uid !== user?.uid
-      );
+      const updated = (book.reservations || []).filter(r => !isMineRecord(r));
       await updateDoc(doc(db, 'Books', book.id), { reservations: updated });
-      alert("✅ 예약이 취소되었습니다.");
-    } catch (e) {
-      alert("취소 실패: " + e.message);
-    }
+      alert('✅ 예약이 취소되었습니다.');
+    } catch (e) { alert('취소 실패: ' + e.message); }
   };
 
-  const myLoanedBooks = [];
-  allBooks.forEach(book => {
-    (book.loans || []).forEach(loan => {
-      if (
-        (user?.uid && loan.uid === user.uid) ||
-        (user?.email && loan.userId === user.email) ||
-        (myId && String(loan.studentNo) === String(myId)) ||
-        (emailPrefix && (loan.studentNo === emailPrefix || loan.userId === emailPrefix))
-      ) {
-        myLoanedBooks.push({ book, loan });
-      }
+  const myLoans = allBooks.flatMap(book => (book.loans || []).filter(isMineRecord).map(loan => ({ book, loan })));
+  const myBookReservations = allBooks.flatMap(book => (book.reservations || []).map((res, i) => ({ book, res, order: i + 1 })).filter(x => isMineRecord(x.res)));
+
+  // 내 로그만 구독 (전체 Log 컬렉션을 받아오던 방식 → uid 조건 쿼리로 변경)
+  useEffect(() => {
+    if (!user?.email) return;
+    const unsub = onSnapshot(query(collection(db, 'Log'), where('uid', '==', user.email)), (snap) => {
+      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => toMillis(b.createdAt || b.timestamp) - toMillis(a.createdAt || a.timestamp)));
+      setLoading(false);
+    }, () => setLoading(false));
+    return () => unsub();
+  }, [user?.email]);
+
+  const userData = currentUserData || {};
+  const penaltyEnd = toDate(userData.penaltyUntil);
+  const isSuspended = penaltyEnd && penaltyEnd > new Date();
+
+  const grouped = useMemo(() => {
+    const daily = {};
+    logs.filter(l => l.action === 'RETURN' || l.action === 'AUTO_CHECKOUT').forEach(l => {
+      const d = toDate(l.createdAt || l.timestamp) || new Date();
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (!daily[key]) daily[key] = { date: d, minutes: 0, count: 0 };
+      daily[key].minutes += Math.max(0, l.usedMinutes || 0);
+      daily[key].count += 1;
     });
-  });
+    return Object.values(daily).sort((a, b) => b.date - a.date);
+  }, [logs]);
 
-  const myReservedBooks = [];
-  allBooks.forEach(book => {
-    (book.reservations || []).forEach((res, idx) => {
-      if (
-        (user?.uid && res.uid === user.uid) ||
-        (user?.email && res.userId === user.email) ||
-        (myId && String(res.studentNo) === String(myId)) ||
-        (emailPrefix && (res.studentNo === emailPrefix || res.userId === emailPrefix))
-      ) {
-        myReservedBooks.push({ book, res, order: idx + 1 });
-      }
-    });
-  });
-
-  const glassCardStyle = {
-    background: 'rgba(255, 255, 255, 0.03)',
-    backdropFilter: 'blur(20px)',
-    WebkitBackdropFilter: 'blur(20px)',
-    borderRadius: '24px',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    padding: isMobile ? '25px 20px' : '35px',
-    boxShadow: '0 20px 40px rgba(0,0,0,0.3)',
-    display: 'flex',
-    flexDirection: 'column',
-    marginBottom: '25px'
-  };
-
-  if (loading) return <div style={{ textAlign: 'center', padding: '100px 0', fontWeight: 'bold', color: 'rgba(255,255,255,0.6)' }}>데이터를 불러오는 중입니다... ⏳</div>;
+  const weekMinutes = grouped.filter(g => Date.now() - g.date.getTime() < 7 * 864e5).reduce((s, g) => s + g.minutes, 0);
+  const maxMin = Math.max(60, ...grouped.slice(0, 14).map(g => g.minutes));
+  const name = userData.name || user?.displayName || user?.email?.split('@')[0];
 
   return (
-    <div style={{ position: 'relative', width: '100%', minHeight: '100vh', padding: isMobile ? '20px 10px' : '40px 20px', boxSizing: 'border-box' }}>
-      <div style={{ maxWidth: '800px', margin: '0 auto', fontFamily: "'Inter', 'Pretendard', sans-serif" }}>
-        
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', padding: '0 10px' }}>
-          <h1 style={{ color: '#fff', fontSize: isMobile ? '1.6rem' : '2rem', fontWeight: '900', margin: 0, textShadow: '0 2px 10px rgba(0,0,0,0.3)' }}>마이페이지</h1>
-        </div>
-
-        <div style={{ ...glassCardStyle, alignItems: 'center', padding: isMobile ? '25px 15px' : '35px' }}>
-          <h2 style={{ margin: '0 0 20px 0', fontSize: '1.2rem', fontWeight: '900', color: '#fff' }}>나의 모바일 출입증</h2>
-          <div style={{ width: '100%', maxWidth: '340px' }}>
-            <QRCodeGen
-              studentId={user?.email || user?.studentNo || "이메일없음"}
-              userName={userData?.name || user?.name || user?.displayName}
-            />
+    <div className="sl-container" style={{ paddingTop: 32, paddingBottom: 48, maxWidth: 960 }}>
+      <div className="sl-between sl-rise" style={{ marginBottom: 24, flexWrap: 'wrap' }}>
+        <div className="sl-row" style={{ gap: 16 }}>
+          <div className="sl-avatar" style={{ width: 60, height: 60, borderRadius: 20, fontSize: '1.4rem', cursor: 'default' }}>{(isAdmin ? '관' : name || '?').slice(0, 1)}</div>
+          <div>
+            <div className="sl-faint" style={{ fontSize: '.78rem', fontWeight: 700, letterSpacing: '.1em' }}>MY PAGE</div>
+            <h1 className="sl-h2" style={{ fontSize: '1.8rem' }}>{name}님</h1>
+            <div className="sl-muted" style={{ fontSize: '.88rem' }}>{userData.studentNo || '-'} · {user?.email}</div>
           </div>
         </div>
+        {isSuspended ? <span className="sl-chip red"><span className="dot" />이용 정지 중</span> : <span className="sl-chip green"><span className="dot" />정상 이용</span>}
+      </div>
 
-        <div style={glassCardStyle}>
-          <h2 style={{ margin: '0 0 20px 0', fontSize: '1.2rem', fontWeight: '900', color: '#fff', borderLeft: '4px solid #3b82f6', paddingLeft: '12px' }}>
-            📚 나의 도서 대출 및 예약 현황
-          </h2>
+      <div className="sl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', marginBottom: 16 }}>
+        <div className="sl-card glow sl-rise d1" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: 28 }}>
+          <span className="sl-chip blue" style={{ marginBottom: 14 }}><Icon name="qr" size={13} />모바일 출입증</span>
+          <QRCodeGen studentId={user?.email || 'unknown'} size={170} />
+        </div>
 
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: '900', color: '#86efac' }}>
-            📖 현재 대출 도서 목록 ({myLoanedBooks.length}권)
-          </h3>
-          {myLoanedBooks.length === 0 ? (
-            <div style={{ padding: '20px', background: 'rgba(255,255,255,0.02)', borderRadius: '14px', border: '1px dashed rgba(255,255,255,0.1)', textAlign: 'center', marginBottom: '22px' }}>
-              <p style={{ margin: 0, color: 'rgba(255,255,255,0.45)', fontSize: '0.9rem', fontWeight: '700' }}>현재 대출 중인 도서가 없습니다.</p>
+        <div className="sl-stack sl-rise d2">
+          <div className="sl-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {[
+              { label: '누적 이용', value: `${userData.totalUsageCount || 0}회`, icon: 'history', tint: 'var(--blue)' },
+              { label: '누적 시간', value: fmtMin(userData.totalUsageTime || 0), icon: 'clock', tint: 'var(--cyan)' },
+              { label: '최근 7일', value: fmtMin(weekMinutes), icon: 'sparkle', tint: 'var(--violet)' },
+              { label: '취소 누적', value: `${userData.cancelCount || 0} / 3`, icon: 'alert', tint: (userData.cancelCount || 0) >= 2 ? 'var(--red)' : 'var(--amber)' },
+            ].map(s => (
+              <div key={s.label} className="sl-card" style={{ padding: 18 }}>
+                <Icon name={s.icon} size={18} style={{ color: s.tint }} />
+                <div className="sl-faint" style={{ fontSize: '.78rem', fontWeight: 700, marginTop: 10 }}>{s.label}</div>
+                <div className="sl-num" style={{ fontSize: '1.3rem', fontWeight: 850, letterSpacing: '-0.03em', marginTop: 2 }}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="sl-card" style={{ padding: 18, borderColor: isSuspended ? 'rgba(251,113,133,.35)' : undefined }}>
+            <div className="sl-between">
+              <div>
+                <div className="sl-faint" style={{ fontSize: '.78rem', fontWeight: 700 }}>패널티 현황</div>
+                <div style={{ fontWeight: 800, marginTop: 4, color: isSuspended ? '#fecdd3' : '#a7f3d0' }}>
+                  {isSuspended ? `${penaltyEnd.toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}까지 예약 정지` : '정지 내역 없음'}
+                </div>
+              </div>
+              <span className="sl-chip">제재 {userData.penaltyCount || 0}단계</span>
             </div>
+            {userData.overdueBookTitle && <p style={{ margin: '8px 0 0', fontSize: '.82rem', color: '#fecdd3', fontWeight: 600 }}>사유: '{userData.overdueBookTitle}' 도서 연체</p>}
+            <p className="sl-faint" style={{ margin: '10px 0 0', fontSize: '.78rem' }}>예약 취소 · 노쇼 3회 누적 또는 도서 연체 시 단계별로 이용이 정지됩니다.</p>
+          </div>
+        </div>
+      </div>
+
+      {adminItems.length > 0 && (
+        <div className="sl-card sl-rise d3" style={{ marginBottom: 16 }}>
+          <div className="sl-row" style={{ marginBottom: 14 }}><Icon name="shield" size={18} style={{ color: 'var(--violet)' }} /><span className="sl-h3">관리자 메뉴</span></div>
+          <div className="sl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+            {adminItems.map(a => <button key={a.mode} className="sl-btn" style={{ justifyContent: 'flex-start' }} onClick={() => setViewMode(a.mode)}><Icon name={a.icon} size={17} />{a.label}</button>)}
+          </div>
+        </div>
+      )}
+
+      <div className="sl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 380px), 1fr))', marginBottom: 16 }}>
+        {/* 📚 도서 대출 · 예약 현황 */}
+        <div className="sl-card sl-rise d3">
+          <div className="sl-row" style={{ marginBottom: 14 }}><Icon name="book" size={18} style={{ color: 'var(--blue)' }} /><span className="sl-h3">도서 대출 · 예약</span></div>
+          <div className="sl-label" style={{ marginBottom: 8, color: '#a7f3d0' }}>대출 중 {myLoans.length}권</div>
+          {myLoans.length === 0 ? (
+            <div className="sl-faint" style={{ padding: 16, borderRadius: 14, border: '1px dashed var(--line-strong)', textAlign: 'center', fontSize: '.86rem', marginBottom: 16 }}>현재 대출 중인 도서가 없습니다.</div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '22px' }}>
-              {myLoanedBooks.map(({ book, loan }, idx) => {
-                const isOverdue = loan.dueDate && new Date(loan.dueDate) < new Date();
+            <div className="sl-stack" style={{ gap: 8, marginBottom: 16 }}>
+              {myLoans.map(({ book, loan }, i) => {
+                const due = loan.dueDate ? new Date(loan.dueDate) : null;
+                const overdue = due && due < new Date();
                 return (
-                  <div key={loan.loanId || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', padding: '15px 18px', borderRadius: '16px', background: isOverdue ? 'rgba(239, 68, 68, 0.12)' : 'rgba(255,255,255,0.05)', border: isOverdue ? '1px solid rgba(239, 68, 68, 0.45)' : '1px solid rgba(255,255,255,0.1)' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                        <span style={{ color: '#fff', fontWeight: '900', fontSize: '1rem' }}>{book.title}</span>
-                        <span style={{ fontSize: '0.75rem', fontWeight: '900', padding: '3px 8px', borderRadius: '6px', background: isOverdue ? 'rgba(239,68,68,0.25)' : 'rgba(34,197,94,0.2)', color: isOverdue ? '#fca5a5' : '#86efac' }}>
-                          {isOverdue ? '🚨 연체중 (즉시 반납 요망)' : '✅ 대출중'}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.55)', fontWeight: '600' }}>
-                        대출일: {loan.borrowedAt ? new Date(loan.borrowedAt).toLocaleDateString('ko-KR') : '-'} · 반납예정일: <strong style={{ color: isOverdue ? '#fca5a5' : '#93c5fd' }}>{loan.dueDate ? new Date(loan.dueDate).toLocaleDateString('ko-KR') : '-'}</strong>
-                      </div>
+                  <div key={loan.loanId || `${book.id}-${i}`} style={{ padding: '12px 14px', borderRadius: 14, background: overdue ? 'rgba(251,113,133,.08)' : 'rgba(255,255,255,.03)', border: `1px solid ${overdue ? 'rgba(251,113,133,.35)' : 'var(--line)'}` }}>
+                    <div className="sl-between" style={{ alignItems: 'flex-start' }}>
+                      <span style={{ fontWeight: 700 }}>{book.title}</span>
+                      <span className={`sl-chip ${overdue ? 'red' : 'green'}`}>{overdue ? '연체 중' : '대출 중'}</span>
+                    </div>
+                    <div className="sl-faint" style={{ fontSize: '.78rem', marginTop: 4 }}>
+                      대출 {loan.borrowedAt ? new Date(loan.borrowedAt).toLocaleDateString('ko-KR') : '-'} · 반납 예정 <b style={{ color: overdue ? '#fecdd3' : '#c7d2fe' }}>{due ? due.toLocaleDateString('ko-KR') : '-'}</b>
                     </div>
                   </div>
                 );
               })}
             </div>
           )}
-
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: '900', color: '#fde047' }}>
-            📌 예약 대기 도서 목록 ({myReservedBooks.length}권)
-          </h3>
-          {myReservedBooks.length === 0 ? (
-            <div style={{ padding: '20px', background: 'rgba(255,255,255,0.02)', borderRadius: '14px', border: '1px dashed rgba(255,255,255,0.1)', textAlign: 'center' }}>
-              <p style={{ margin: 0, color: 'rgba(255,255,255,0.45)', fontSize: '0.9rem', fontWeight: '700' }}>현재 예약 대기 중인 도서가 없습니다.</p>
-            </div>
+          <div className="sl-label" style={{ marginBottom: 8, color: '#fde68a' }}>예약 대기 {myBookReservations.length}권</div>
+          {myBookReservations.length === 0 ? (
+            <div className="sl-faint" style={{ padding: 16, borderRadius: 14, border: '1px dashed var(--line-strong)', textAlign: 'center', fontSize: '.86rem' }}>예약 대기 중인 도서가 없습니다.</div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {myReservedBooks.map(({ book, order }, idx) => (
-                <div key={book.id || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', padding: '15px 18px', borderRadius: '16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                      <span style={{ color: '#fde047', fontWeight: '900', fontSize: '0.85rem' }}>대기 {order}순위</span>
-                      <span style={{ color: '#fff', fontWeight: '900', fontSize: '1rem' }}>{book.title}</span>
-                    </div>
-                    <div style={{ fontSize: '0.8rem', color: book.availableQuantity > 0 ? '#86efac' : 'rgba(255,255,255,0.5)', fontWeight: '700' }}>
-                      {book.availableQuantity > 0 ? '🔔 도서가 반납되었습니다! 지금 방문하여 대출하세요.' : '⏳ 반납 대기 중 (대출 전환 시 현재 대출 목록으로 자동 이동합니다)'}
+            <div className="sl-stack" style={{ gap: 8 }}>
+              {myBookReservations.map(({ book, order }) => (
+                <div key={book.id} className="sl-between" style={{ padding: '12px 14px', borderRadius: 14, background: 'rgba(255,255,255,.03)', border: '1px solid var(--line)' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700 }}><span style={{ color: '#fde68a', fontSize: '.8rem', marginRight: 6 }}>대기 {order}순위</span>{book.title}</div>
+                    <div style={{ fontSize: '.78rem', marginTop: 3, color: book.availableQuantity > 0 ? '#a7f3d0' : 'var(--text-3)' }}>
+                      {book.availableQuantity > 0 ? '도서가 반납되었어요! 지금 방문해서 대출하세요.' : '반납 대기 중'}
                     </div>
                   </div>
-                  <button onClick={() => handleCancelMyReservation(book)} style={{ padding: '8px 14px', background: 'rgba(239, 68, 68, 0.2)', color: '#fca5a5', border: '1px solid rgba(239, 68, 68, 0.4)', borderRadius: '10px', fontSize: '0.8rem', fontWeight: '900', cursor: 'pointer' }}>
-                    예약 취소
-                  </button>
+                  <button className="sl-btn danger sm" onClick={() => handleCancelBookReservation(book)}>예약 취소</button>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        <div style={glassCardStyle}>
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '18px' }}>
-    <h2 style={{ margin: 0, fontSize: '1.2rem', fontWeight: '900', color: '#fff', borderLeft: '4px solid #60a5fa', paddingLeft: '12px' }}>
-      🔔 도서 알림함
-    </h2>
-    <span style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#93c5fd', padding: '5px 12px', borderRadius: '20px', fontSize: '0.78rem', fontWeight: '900', border: '1px solid rgba(59, 130, 246, 0.4)' }}>
-      📱 알림 연동 번호: {userData?.phone || phoneInput || '010-1234-5678'}
-    </span>
-  </div>
-
-  <div style={{ display: 'flex', gap: '8px', marginBottom: '18px', alignItems: 'center', flexWrap: 'wrap' }}>
-    {editingPhone ? (
-      <>
-        <input
-          type="text"
-          value={phoneInput}
-          onChange={e => setPhoneInput(e.target.value)}
-          placeholder="010-0000-0000"
-          style={{ flex: 1, padding: '10px 14px', borderRadius: '10px', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(96, 165, 250, 0.5)', color: '#fff', fontWeight: '700', outline: 'none' }}
-        />
-        <button onClick={handleSavePhone} style={{ padding: '10px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: '900', cursor: 'pointer' }}>저장</button>
-        <button onClick={() => setEditingPhone(false)} style={{ padding: '10px 14px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: '800', cursor: 'pointer' }}>취소</button>
-      </>
-    ) : (
-      <button onClick={() => setEditingPhone(true)} style={{ padding: '8px 14px', background: 'rgba(255,255,255,0.07)', color: '#60a5fa', border: '1px solid rgba(96, 165, 250, 0.35)', borderRadius: '10px', fontSize: '0.82rem', fontWeight: '800', cursor: 'pointer' }}>
-        ✏️ 알림 수신 번호 변경
-      </button>
-    )}
-  </div>
-
-  {kakaoAlerts.length === 0 ? (
-    <div style={{ padding: '22px', background: 'rgba(255,255,255,0.02)', borderRadius: '14px', border: '1px dashed rgba(255,255,255,0.1)', textAlign: 'center' }}>
-      <p style={{ margin: 0, color: 'rgba(255,255,255,0.45)', fontSize: '0.88rem', fontWeight: '700' }}>수신된 도서 알림 메시지가 없습니다.</p>
-    </div>
-  ) : (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '280px', overflowY: 'auto' }}>
-      {kakaoAlerts.map(alertItem => (
-        <div key={alertItem.id} style={{ borderRadius: '14px', overflow: 'hidden', border: '1px solid rgba(96, 165, 250, 0.4)', background: 'rgba(15, 23, 42, 0.9)' }}>
-          <div style={{ background: 'linear-gradient(135deg, #2563eb, #3b82f6)', color: '#fff', padding: '8px 14px', fontSize: '0.8rem', fontWeight: '900', display: 'flex', justifyContent: 'space-between' }}>
-            <span>🔔 시스템 알림 ({alertItem.phone || userData?.phone || '010-1234-5678'})</span>
-            <span>{alertItem.createdAt?.toDate ? alertItem.createdAt.toDate().toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '방금 전'}</span>
+        {/* 💬 도서 알림함 (카카오 알림톡) */}
+        <div className="sl-card sl-rise d3">
+          <div className="sl-between" style={{ marginBottom: 14, flexWrap: 'wrap' }}>
+            <div className="sl-row"><Icon name="chat" size={18} style={{ color: '#FEE500' }} /><span className="sl-h3">도서 알림함</span></div>
+            <span className="sl-chip">📱 {userData.phone || '번호 미등록'}</span>
           </div>
-          <div style={{ padding: '12px 14px' }}>
-            <div style={{ color: alertItem.type === 'BOOK_OVERDUE' ? '#fca5a5' : '#93c5fd', fontWeight: '900', fontSize: '0.9rem', marginBottom: '4px' }}>{alertItem.title}</div>
-            <div style={{ color: '#e2e8f0', fontSize: '0.85rem', lineHeight: '1.45', fontWeight: '600' }}>{alertItem.message}</div>
+          <div className="sl-row" style={{ marginBottom: 14 }}>
+            {editingPhone ? (
+              <>
+                <input className="sl-input" style={{ height: 42 }} value={phoneInput} onChange={e => setPhoneInput(e.target.value)} placeholder="010-0000-0000" inputMode="tel" />
+                <button className="sl-btn primary sm" onClick={handleSavePhone}>저장</button>
+                <button className="sl-btn sm" onClick={() => setEditingPhone(false)}>취소</button>
+              </>
+            ) : (
+              <button className="sl-btn sm" onClick={() => { setPhoneInput(userData.phone || ''); setEditingPhone(true); }}>알림 수신 번호 변경</button>
+            )}
           </div>
-        </div>
-      ))}
-    </div>
-  )}
-</div>
-
-        <div style={glassCardStyle}>
-          <h2 style={{ margin: '0 0 20px 0', fontSize: '1.2rem', fontWeight: '900', color: '#fff', borderLeft: '4px solid #ef4444', paddingLeft: '12px' }}>나의 패널티 현황 (좌석 노쇼 및 도서 연체)</h2>
-          <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, background: 'rgba(255,255,255,0.05)', padding: '20px', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)', textAlign: 'center', minWidth: '150px' }}>
-              <p style={{ margin: 0, color: 'rgba(255,255,255,0.6)', fontSize: '0.9rem', fontWeight: '700' }}>현재 패널티 누적</p>
-              <p style={{ margin: '10px 0 0 0', fontSize: '2rem', fontWeight: '900', color: userData?.penaltyCount >= 2 ? '#fca5a5' : '#93c5fd' }}>
-                {userData?.penaltyCount || 0} <span style={{ fontSize: '1rem', color: 'rgba(255,255,255,0.4)' }}>/ 3회</span>
-              </p>
-            </div>
-            
-            <div style={{ flex: 1, background: 'rgba(255,255,255,0.05)', padding: '20px', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)', textAlign: 'center', minWidth: '150px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-              <p style={{ margin: 0, color: 'rgba(255,255,255,0.6)', fontSize: '0.9rem', fontWeight: '700' }}>이용 정지 해제일</p>
-              <p style={{ margin: '10px 0 0 0', fontSize: '1.1rem', fontWeight: '900', color: userData?.penaltyUntil ? '#fca5a5' : '#34d399' }}>
-                {userData?.penaltyUntil 
-                  ? new Date(userData.penaltyUntil.toDate ? userData.penaltyUntil.toDate() : userData.penaltyUntil).toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) 
-                  : '정지 내역 없음'}
-              </p>
-              {userData?.overdueBookTitle && (
-                <span style={{ marginTop: '6px', fontSize: '0.75rem', color: '#fca5a5', fontWeight: '800' }}>사유: '{userData.overdueBookTitle}' 도서 연체</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div style={glassCardStyle}>
-          <h2 style={{ margin: '0 0 20px 0', fontSize: '1.2rem', fontWeight: '900', color: '#fff', borderLeft: '4px solid #60a5fa', paddingLeft: '12px' }}>최근 좌석 이용 이력</h2>
-          {(() => {
-            const dailyData = {};
-            logs
-              .filter(log => log.action === 'RETURN' || log.action === 'AUTO_CHECKOUT')
-              .forEach((log) => {
-                const logDate = (log.timestamp || log.createdAt)?.toDate ? (log.timestamp || log.createdAt).toDate() : new Date();
-                const year = logDate.getFullYear();
-                const month = logDate.getMonth() + 1;
-                const date = logDate.getDate();
-                const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
-                const day = dayNames[logDate.getDay()];
-                const dateString = `${year}년 ${month}월 ${date}일 ${day}요일`;
-                let actualMinutes = Math.max(0, log.usedMinutes || 0);
-                if (!dailyData[dateString]) dailyData[dateString] = { totalMinutes: 0, sortKey: logDate.getTime() };
-                dailyData[dateString].totalMinutes += actualMinutes;
-              });
-
-            const groupedLogs = Object.entries(dailyData)
-              .sort(([, a], [, b]) => b.sortKey - a.sortKey)
-              .map(([dateString, data]) => ({ dateString, totalMinutes: data.totalMinutes }));
-
-            if (groupedLogs.length === 0) {
-              return (
-                <div style={{ textAlign: 'center', padding: '40px 20px', background: 'rgba(255,255,255,0.02)', borderRadius: '16px', border: '1px dashed rgba(255,255,255,0.1)' }}>
-                  <p style={{ color: 'rgba(255,255,255,0.5)', margin: 0, fontWeight: '700' }}>아직 도서관 이용 기록이 없습니다.</p>
+          {kakaoAlerts.length === 0 ? (
+            <div className="sl-faint" style={{ padding: 16, borderRadius: 14, border: '1px dashed var(--line-strong)', textAlign: 'center', fontSize: '.86rem' }}>수신된 도서 알림이 없습니다.</div>
+          ) : (
+            <div className="sl-stack" style={{ gap: 8, maxHeight: 320, overflowY: 'auto', paddingRight: 4 }}>
+              {kakaoAlerts.map(a => (
+                <div key={a.id} style={{ padding: '12px 14px', borderRadius: 14, background: 'rgba(255,255,255,.03)', border: `1px solid ${a.type === 'BOOK_OVERDUE' ? 'rgba(251,113,133,.35)' : 'var(--line)'}` }}>
+                  <div className="sl-between" style={{ alignItems: 'flex-start' }}>
+                    <span style={{ fontWeight: 700, color: a.type === 'BOOK_OVERDUE' ? '#fecdd3' : '#c7d2fe' }}>{a.title}</span>
+                    <span className="sl-faint" style={{ fontSize: '.74rem', flexShrink: 0 }}>{toDate(a.createdAt)?.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) || '방금 전'}</span>
+                  </div>
+                  <div className="sl-muted" style={{ fontSize: '.84rem', marginTop: 4, lineHeight: 1.5 }}>{a.message}</div>
                 </div>
-              );
-            }
-
-            return (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '400px', overflowY: 'auto', paddingRight: '5px' }}>
-                {groupedLogs.map((item, index) => {
-                  const h = Math.floor(item.totalMinutes / 60); 
-                  const m = item.totalMinutes % 60;             
-                  let durationText = `${h > 0 ? `${h}시간 ` : ''}${m > 0 ? `${m}분` : ''}`.trim() || '1분 미만'; 
-                  return (
-                    <div key={index} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                      <div style={{ fontSize: '1rem', fontWeight: '800', color: '#fff' }}>{item.dateString}</div>
-                      <div style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#93c5fd', padding: '6px 12px', borderRadius: '12px', fontWeight: '900', fontSize: '0.85rem', border: '1px solid rgba(59,130,246,0.3)' }}>
-                        {durationText} 이용
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
+              ))}
+            </div>
+          )}
         </div>
+      </div>
 
+      <div className="sl-card sl-rise d3">
+        <div className="sl-between" style={{ marginBottom: 16 }}>
+          <h2 className="sl-h3">최근 좌석 이용 이력</h2>
+          <span className="sl-faint" style={{ fontSize: '.82rem' }}>{grouped.length}일</span>
+        </div>
+        {loading ? (
+          <div className="sl-stack" style={{ gap: 10 }}>{[0, 1, 2].map(i => <div key={i} className="sl-skel" style={{ height: 56 }} />)}</div>
+        ) : grouped.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '36px 16px', borderRadius: 18, border: '1px dashed var(--line-strong)', color: 'var(--text-3)', fontWeight: 600 }}>아직 도서관 이용 기록이 없어요. 첫 좌석을 예약해 볼까요?</div>
+        ) : (
+          <div className="sl-stack" style={{ gap: 8, maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+            {grouped.map(g => (
+              <div key={g.date.toISOString()} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, auto) 1fr auto', alignItems: 'center', gap: 14, padding: '14px 16px', borderRadius: 16, background: 'rgba(255,255,255,.03)', border: '1px solid var(--line)' }}>
+                <div>
+                  <div style={{ fontWeight: 800 }}>{g.date.getMonth() + 1}월 {g.date.getDate()}일 <span className="sl-faint" style={{ fontWeight: 600 }}>({DAY[g.date.getDay()]})</span></div>
+                  <div className="sl-faint" style={{ fontSize: '.76rem' }}>{g.count}회 이용</div>
+                </div>
+                <div style={{ height: 8, borderRadius: 8, background: 'rgba(255,255,255,.06)', overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.min(100, (g.minutes / maxMin) * 100)}%`, height: '100%', borderRadius: 8, background: 'var(--grad)' }} />
+                </div>
+                <span className="sl-chip blue sl-num">{fmtMin(g.minutes) || '1분 미만'}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
 export default MyPage;
-

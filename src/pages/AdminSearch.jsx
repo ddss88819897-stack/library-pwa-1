@@ -53,7 +53,7 @@ const AdminSearch = () => {
       setNewKeyword('');
       fetchKeywords(); 
       alert('추천 검색어가 추가되었습니다.');
-    } catch (error) {
+    } catch {
       alert('추가 중 오류가 발생했습니다.');
     }
   };
@@ -77,7 +77,7 @@ const AdminSearch = () => {
       setSelectedKeywords([]);
       fetchKeywords();
       alert('선택한 검색어가 삭제되었습니다.');
-    } catch (error) {
+    } catch {
       alert('삭제 중 오류가 발생했습니다.');
     }
   };
@@ -93,7 +93,7 @@ const AdminSearch = () => {
       setSelectedKeywords([]);
       fetchKeywords();
       alert('검색 횟수가 초기화되었습니다.');
-    } catch (error) {
+    } catch {
       alert('초기화 중 오류가 발생했습니다.');
     }
   };
@@ -106,7 +106,7 @@ const AdminSearch = () => {
       setNewBanned('');
       fetchKeywords();
       alert('금지어가 등록되었습니다.');
-    } catch (error) {
+    } catch {
       alert('금지어 등록 오류');
     }
   };
@@ -115,7 +115,7 @@ const AdminSearch = () => {
     try {
       await deleteDoc(doc(db, 'BannedKeywords', bannedId));
       fetchKeywords();
-    } catch (error) {
+    } catch {
       alert('삭제 오류');
     }
   };
