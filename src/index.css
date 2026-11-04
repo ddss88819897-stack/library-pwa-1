@@ -278,3 +278,10 @@ input[type='date'], input[type='datetime-local'], input[type='time'] { color-sch
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ---------- Notifications / Kakao ---------- */
+.sl-notif { position: absolute; top: 50px; right: -8px; z-index: 2; width: min(340px, calc(100vw - 24px)); border-radius: 20px; overflow: hidden;
+  background: linear-gradient(180deg, rgba(20,27,52,.98), rgba(10,14,30,.99)); border: 1px solid var(--line-strong); box-shadow: 0 30px 70px -20px rgba(0,0,0,.85); animation: sl-pop .28s var(--ease); }
+@media (max-width: 860px) { .sl-notif { position: fixed; top: calc(70px + env(safe-area-inset-top)); right: 12px; } }
+.sl-kakao { position: fixed; top: calc(80px + env(safe-area-inset-top)); right: 20px; z-index: 2000001; width: min(360px, calc(100vw - 32px)); border-radius: 20px; overflow: hidden;
+  background: rgba(14, 19, 40, .96); border: 1px solid rgba(254,229,0,.55); box-shadow: 0 30px 70px -20px rgba(0,0,0,.8); animation: sl-pop .4s var(--ease); }

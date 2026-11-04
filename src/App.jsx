@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { auth, db } from './firebase';
 import { signOut } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, collection, query, where, deleteDoc } from 'firebase/firestore';
-import { format, addDays } from 'date-fns';
+import { format, addDays, startOfDay } from 'date-fns';
+import { ko } from 'date-fns/locale';
 
 import MyPage from './pages/MyPage';
 import ScannerPage from './pages/Scanner';
@@ -19,12 +20,14 @@ import AdminSearch from './pages/AdminSearch';
 import RankingPage from './pages/RankingPage';
 import FloatingChatbot from './components/FloatingChatbot';
 import Icon from './components/Icon';
+import EventBanner from './components/EventBanner';
+import RankingBanner from './components/RankingBanner';
 
 import { useLibraryData } from './hooks/useLibraryData';
 import { useUserSession } from './hooks/useUserSession';
 import { handleLibraryAction } from './api/libraryService';
 import { updateSeatsLayout } from './api/seatApi';
-import { minutesBetween } from './utils/userDoc';
+import { minutesBetween, toMillis, emailPrefix } from './utils/userDoc';
 
 const FLOORS = [
   { id: '1층', title: '1층 일반 열람실', short: '1층 열람실', desc: '조용한 개인 열람석과 소규모 스터디룸', fallback: '열람석 60석 · 스터디룸 2개' },
@@ -39,7 +42,24 @@ const timeOptions = [...Array(28).keys()].map(i => {
   return `${String(h).padStart(2, '0')}:${m}`;
 });
 
-const ADMIN_IDS = ['pjy', 'admin', 'manager', '1111111', '관리자', '2212020'];
+const ADMIN_IDS = ['pjy', 'admin', 'manager', '1111111', '관리자', '2212020', 'tkdduf'];
+const REPORT_ACTIONS = ['USER_REPORTED', 'CHECK_IN_CLEAN_REPORT', 'REPORT_SEAT'];
+
+const getNotificationText = (action, seatLabel) => {
+  const label = seatLabel || '좌석';
+  switch (action) {
+    case 'RESERVE': return `${label} 예약이 완료되었습니다.`;
+    case 'CANCEL': return `${label} 예약이 취소되었습니다.`;
+    case 'NO_SHOW_CANCEL': return `${label} 미입실로 예약이 취소되었습니다.`;
+    case 'CHECK_IN': return `${label} 입실이 확인되었습니다.`;
+    case 'RETURN': return `${label} 퇴실 처리되었습니다.`;
+    case 'AUTO_CHECKOUT': return `${label} 이용 시간이 만료되어 자동 퇴실되었습니다.`;
+    case 'FORCE_EVICT': return `${label} 관리자에 의해 강제 퇴실되었습니다.`;
+    default: return `${label}에 새로운 변경사항이 있습니다.`;
+  }
+};
+const readLS = (k, fallback) => { try { const v = localStorage.getItem(k); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } };
+const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 저장소 차단 */ } };
 const ADMIN_VIEWS = ['USERS', 'SCANNER', 'EVENTS_ADMIN', 'ADMIN_SEARCH'];
 
 const nowHHMM = () => format(new Date(), 'HH:mm');
@@ -94,10 +114,18 @@ function App() {
   const [forceCleanCheck, setForceCleanCheck] = useState(false);
   const [myActiveTickets, setMyActiveTickets] = useState([]);
   const [clock, setClock] = useState(nowHHMM());
+  const [kakaoPopup, setKakaoPopup] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [lastReadTime, setLastReadTime] = useState(0);
+  const [penaltyAlert, setPenaltyAlert] = useState(null);
+  const [mapReservations, setMapReservations] = useState([]);
+  const [showRankingBanner, setShowRankingBanner] = useState(true);
+  const prevTicketStatusRef = useRef(null);
 
   const toast = normalizeAlert(systemAlert);
 
-  const isAdmin = !!((currentUserData && (ADMIN_IDS.includes(String(currentUserData.studentNo)) || currentUserData.role === 'MANAGER')) ||
+  const isAdmin = !!((currentUserData && (ADMIN_IDS.includes(String(currentUserData.studentNo)) || (currentUserData.role === 'MANAGER' || currentUserData.role === 'ADMIN'))) ||
     (user?.email && ADMIN_IDS.includes(user.email.split('@')[0])));
   const displayName = isAdmin ? '관리자' : (currentUserData?.name || user?.displayName || user?.email?.split('@')[0] || '회원');
 
@@ -232,13 +260,115 @@ function App() {
     });
   }, [myActiveTickets, clock, todayStr, user, isAdmin, seatFor]);
 
-  // 키오스크 스캔으로 입실 완료되면 QR 창 자동 닫기
+  // 키오스크 스캔으로 입실 완료되면 QR 창을 닫고, 배치도에서 필수 클린 체크를 띄움
   useEffect(() => {
-    if (showIdQR && myTicket?.status === 'OCCUPIED') {
+    const prev = prevTicketStatusRef.current;
+    const curr = myTicket?.status;
+    if (showIdQR && curr === 'OCCUPIED') {
       setShowIdQR(false);
       setSystemAlert({ title: '✅ 입실 완료', message: `${myTicket.seatId} 좌석 이용을 시작합니다. 집중력 200% 응원해요!` });
+      if (prev === 'RESERVED') {
+        const seat = seats.find(s => s.id === myTicket.seatId);
+        if (seat) {
+          setViewMode('MAP'); setIsBookingMode(true);
+          setActiveFloor(FLOORS.find(f => String(seat.id).startsWith(f.id))?.id || activeFloor);
+          setSelectedSeat(seat); setForceCleanCheck(true);
+        }
+      }
     }
-  }, [myTicket, showIdQR]);
+    prevTicketStatusRef.current = curr;
+  }, [myTicket, showIdQR, seats, activeFloor]);
+
+  // 💬 카카오톡 알림톡 실시간 수신 (Notifications 컬렉션 · 접속 이후 새로 추가된 것만)
+  useEffect(() => {
+    if (!user) return;
+    let first = true;
+    const prefix = emailPrefix(user.email);
+    const myStuNo = String(currentUserData?.studentNo || prefix);
+    const unsub = onSnapshot(collection(db, 'Notifications'), (snap) => {
+      if (first) { first = false; return; }
+      snap.docChanges().forEach((change) => {
+        if (change.type !== 'added') return;
+        const data = change.doc.data();
+        const mine = isAdmin || (user.uid && data.uid === user.uid) || data.userId === user.email ||
+          (prefix && (data.userId === prefix || String(data.studentNo) === prefix)) || String(data.studentNo) === myStuNo;
+        if (mine) setKakaoPopup({ title: data.title || '카카오톡 알림톡', message: data.message || '', phone: data.phone || currentUserData?.phone || '' });
+      });
+    }, () => {});
+    return () => unsub();
+  }, [user, currentUserData, isAdmin]);
+
+  useEffect(() => {
+    if (!kakaoPopup) return;
+    const t = setTimeout(() => setKakaoPopup(null), 7000);
+    return () => clearTimeout(t);
+  }, [kakaoPopup]);
+
+  // 🔔 알림함: 내 좌석 로그(+관리자는 신고 접수) 구독
+  useEffect(() => {
+    if (!user?.email) return;
+    const ids = [...new Set([user.email, emailPrefix(user.email), currentUserData?.id, currentUserData?.studentNo && String(currentUserData.studentNo)].filter(Boolean))];
+    const lists = { mine: [], reports: [] };
+    const publish = () => {
+      const merged = [...lists.mine, ...lists.reports.filter(r => !lists.mine.some(m => m.id === r.id))];
+      setNotifications(merged.sort((a, b) => toMillis(b.createdAt || b.timestamp) - toMillis(a.createdAt || a.timestamp)).slice(0, 50));
+    };
+    const unsubs = [onSnapshot(query(collection(db, 'Log'), where('uid', 'in', ids)), (snap) => { lists.mine = snap.docs.map(d => ({ id: d.id, ...d.data() })); publish(); }, () => {})];
+    if (isAdmin) unsubs.push(onSnapshot(query(collection(db, 'Log'), where('action', 'in', REPORT_ACTIONS)), (snap) => { lists.reports = snap.docs.map(d => ({ id: d.id, ...d.data() })); publish(); }, () => {}));
+    return () => unsubs.forEach(u => u());
+  }, [user, currentUserData?.id, currentUserData?.studentNo, isAdmin]);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    const key = `lastRead_${user.email}`;
+    const stored = readLS(key, null);
+    if (stored) setLastReadTime(Number(stored));
+    else { const now = Date.now(); setLastReadTime(now); writeLS(key, now); }
+  }, [user]);
+
+  // 🚨 관리자 제재 · 신고 대상 안내 (한 번 확인하면 다시 띄우지 않음)
+  useEffect(() => {
+    if (!user?.email || isAdmin || notifications.length === 0) return;
+    const read = readLS(`read_penalties_${user.email}`, []);
+    const unread = notifications.find(n => ['ADMIN_PENALTY', 'USER_REPORTED'].includes(n.action) && !read.includes(n.id) &&
+      (n.action === 'ADMIN_PENALTY' || n.suspects?.includes(user.email) || n.uid === user.email));
+    if (unread) setPenaltyAlert(unread);
+  }, [notifications, user, isAdmin]);
+
+  const handleDismissPenalty = () => {
+    if (!penaltyAlert) return;
+    const key = `read_penalties_${user.email}`;
+    writeLS(key, [...readLS(key, []), penaltyAlert.id]);
+    setPenaltyAlert(null);
+  };
+
+  // 관리자 강제 퇴실 등 개인 알림 (User/{id}/notifications)
+  useEffect(() => {
+    if (!user?.email) return;
+    const docId = currentUserData?.id || emailPrefix(user.email);
+    const unsub = onSnapshot(query(collection(db, 'User', docId, 'notifications'), where('read', '==', false)), (snap) => {
+      snap.forEach((d) => {
+        setSystemAlert({ title: '🚨 알림', message: d.data().message });
+        updateDoc(d.ref, { read: true }).catch(() => {});
+      });
+    }, () => {});
+    return () => unsub();
+  }, [user, currentUserData?.id]);
+
+  const unreadCount = notifications.filter(n => toMillis(n.createdAt || n.timestamp) > lastReadTime).length;
+  const pendingReportsCount = isAdmin ? notifications.filter(n => REPORT_ACTIONS.includes(n.action)).length : 0;
+  const toggleNotifications = () => {
+    if (!showNotifications) { const now = Date.now(); setLastReadTime(now); writeLS(`lastRead_${user?.email}`, now); }
+    setShowNotifications(v => !v);
+  };
+
+  // 선택한 날짜의 예약 → 그 날짜·시간 기준 좌석 상태 계산
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'Reservations'), where('date', '==', format(selectedDate, 'yyyy-MM-dd')));
+    const unsub = onSnapshot(q, snap => setMapReservations(snap.docs.map(d => ({ id: d.id, ...d.data() }))), () => {});
+    return () => unsub();
+  }, [selectedDate, user]);
 
   const handleCloseIdQR = async () => {
     setShowIdQR(false);
@@ -271,6 +401,33 @@ function App() {
     const status = dbStat !== 'AUTO' ? dbStat : ratio >= 0.9 ? 'UNAVAILABLE' : ratio >= 0.7 ? 'CROWDED' : 'AVAILABLE';
     return { total: usable.length, busy, free: usable.length - busy, ratio, status };
   }, [seats, todayReservations, clock, facilityStatus]);
+
+  const displaySeats = useMemo(() => {
+    if (isAdmin || !isBookingMode) return seats;
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const isTodayMap = dateStr === todayStr;
+    const active = mapReservations.filter(r => ['RESERVED', 'OCCUPIED'].includes(r.status));
+    return seats.map(seat => {
+      if (seat.status === 'DISABLED') return seat;
+      const mine = seat.userId && seat.userId === user?.email;
+      const overlapped = active.some(r => r.seatId === seat.id && startTime < r.endTime && endTime > r.startTime);
+      if (isTodayMap) {
+        if (['RESERVED', 'OCCUPIED'].includes(seat.status)) return seat;
+        return overlapped ? { ...seat, status: 'RESERVED' } : seat;
+      }
+      if (mine) return seat;
+      return { ...seat, status: overlapped ? 'RESERVED' : 'AVAILABLE', userId: null };
+    });
+  }, [seats, mapReservations, selectedDate, startTime, endTime, todayStr, isAdmin, isBookingMode, user]);
+
+  // 1인 1좌석 원칙: 이미 예약/이용 중이면 다른 좌석 선택 차단
+  const handleSeatSelect = (seat) => {
+    if (seat && !isAdmin && isBookingMode && myTicket && seat.id !== myTicket.seatId) {
+      setSystemAlert({ title: '🚫 이용 제한', message: '1인 1좌석 원칙입니다.\n이미 예약하거나 이용 중인 좌석이 있습니다.' });
+      return;
+    }
+    setSelectedSeat(seat);
+  };
 
   const statusChip = (status) => {
     if (status === 'UNAVAILABLE') return <span className="sl-chip red"><span className="dot" />이용 불가</span>;
@@ -330,6 +487,34 @@ function App() {
     <div className={`sl-shell ${viewMode !== 'SCANNER' ? 'sl-has-tabbar' : ''}`} style={{ paddingBottom: myTicket && isMapLike ? 190 : undefined }}>
       <div className="sl-ambient"><div className="sl-orb a" /><div className="sl-orb b" /><div className="sl-orb c" /></div>
 
+      {/* 💬 카카오톡 알림톡 팝업 */}
+      {kakaoPopup && (
+        <div className="sl-kakao" role="status">
+          <div style={{ background: '#FEE500', color: '#191919', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontWeight: 800, fontSize: '.84rem' }}>
+            <span className="sl-row" style={{ gap: 6 }}><Icon name="chat" size={15} stroke={2.2} />카카오톡 알림톡{kakaoPopup.phone ? ` · ${kakaoPopup.phone}` : ''}</span>
+            <button onClick={() => setKakaoPopup(null)} style={{ border: 0, background: 'none', cursor: 'pointer', padding: 0, display: 'grid' }} aria-label="닫기"><Icon name="x" size={16} stroke={2.4} /></button>
+          </div>
+          <div style={{ padding: '14px 16px' }}>
+            <div style={{ fontWeight: 800, color: '#fde68a', marginBottom: 4 }}>{kakaoPopup.title}</div>
+            <div className="sl-muted" style={{ fontSize: '.88rem', lineHeight: 1.5, whiteSpace: 'pre-line' }}>{kakaoPopup.message}</div>
+          </div>
+        </div>
+      )}
+
+      {/* 🚨 제재 · 신고 안내 */}
+      {penaltyAlert && (
+        <div className="sl-overlay" style={{ zIndex: 10050 }}>
+          <div className="sl-modal" style={{ textAlign: 'center', maxWidth: 400 }}>
+            <div style={{ width: 64, height: 64, borderRadius: 22, margin: '0 auto 16px', display: 'grid', placeItems: 'center', background: 'rgba(251,113,133,.14)', border: '1px solid rgba(251,113,133,.4)', color: 'var(--red)' }}><Icon name="alert" size={30} /></div>
+            <h2 className="sl-h2" style={{ color: '#fecdd3', marginBottom: 10 }}>{penaltyAlert.action === 'ADMIN_PENALTY' ? '도서관 이용 제한 안내' : '도서관 이용 경고 안내'}</h2>
+            <p className="sl-muted" style={{ margin: '0 0 6px', lineHeight: 1.6 }}>{penaltyAlert.result || '규정 위반으로 신고가 접수되었습니다.'}</p>
+            {penaltyAlert.seatLabel && <p className="sl-faint" style={{ margin: '0 0 20px', fontSize: '.85rem' }}>좌석 {penaltyAlert.seatLabel}</p>}
+            <p className="sl-faint" style={{ fontSize: '.8rem', margin: '0 0 20px' }}>이의가 있으면 좌석 이용 내역에서 소명하거나 AI 사서에게 문의해 주세요.</p>
+            <button className="sl-btn danger-solid lg block" onClick={handleDismissPenalty}>내용을 확인했습니다</button>
+          </div>
+        </div>
+      )}
+
       {/* 🔔 토스트 */}
       {toast && (
         <div className="sl-toast" role="status" onClick={() => setSystemAlert(null)}>
@@ -383,12 +568,50 @@ function App() {
             ))}
             {isAdmin && <span style={{ width: 1, background: 'var(--line)', margin: '8px 6px' }} />}
             {isAdmin && adminItems.map(n => (
-              <button key={n.mode} className={`sl-navlink ${viewMode === n.mode ? 'on' : ''}`} onClick={() => go(n.mode)} style={{ color: viewMode === n.mode ? '#fff' : 'var(--violet)' }}>{n.label}</button>
+              <button key={n.mode} className={`sl-navlink ${viewMode === n.mode ? 'on' : ''}`} onClick={() => go(n.mode)} style={{ position: 'relative', color: viewMode === n.mode ? '#fff' : 'var(--violet)' }}>
+                {n.label}
+                {n.mode === 'USERS' && pendingReportsCount > 0 && <span style={{ position: 'absolute', top: 6, right: 6, width: 7, height: 7, borderRadius: 4, background: 'var(--red)' }} />}
+              </button>
             ))}
           </nav>
 
           <div className="sl-row" style={{ gap: 8 }}>
             <button className="sl-btn sm sl-desktop-only" onClick={() => setShowIdQR(true)}><Icon name="qr" size={16} />출입증</button>
+            <div style={{ position: 'relative' }}>
+              <button className="sl-icon-btn" title="알림" onClick={toggleNotifications} style={{ position: 'relative', color: showNotifications ? '#fff' : undefined }}>
+                <Icon name="bell" size={18} />
+                {unreadCount > 0 && <span className="sl-num" style={{ position: 'absolute', top: -5, right: -5, minWidth: 18, height: 18, padding: '0 5px', borderRadius: 9, background: 'var(--red)', color: '#fff', fontSize: '.66rem', fontWeight: 800, display: 'grid', placeItems: 'center', boxShadow: '0 0 0 2px var(--bg)' }}>{unreadCount > 9 ? '9+' : unreadCount}</span>}
+              </button>
+              {showNotifications && (
+                <>
+                  <div style={{ position: 'fixed', inset: 0, zIndex: 1 }} onClick={() => setShowNotifications(false)} />
+                  <div className="sl-notif">
+                    <div className="sl-between" style={{ padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
+                      <span style={{ fontWeight: 800 }}>알림</span>
+                      <button className="sl-btn ghost sm" style={{ height: 28 }} onClick={() => setShowNotifications(false)}>닫기</button>
+                    </div>
+                    <div style={{ maxHeight: 360, overflowY: 'auto', padding: 8 }}>
+                      {notifications.length === 0 ? (
+                        <p className="sl-faint" style={{ textAlign: 'center', padding: '28px 0', margin: 0, fontSize: '.88rem' }}>새로운 알림이 없습니다.</p>
+                      ) : notifications.map(n => {
+                        const isReport = REPORT_ACTIONS.includes(n.action);
+                        const text = n.action === 'ADMIN_PENALTY' ? `[패널티 조치] ${n.result || ''}` : isReport && isAdmin ? `[신고 접수] ${n.seatLabel || n.seatId || ''} · ${n.result || '사유 없음'}` : getNotificationText(n.action, n.seatLabel || n.seatId);
+                        const fresh = toMillis(n.createdAt || n.timestamp) > lastReadTime;
+                        return (
+                          <div key={n.id} style={{ display: 'flex', gap: 10, padding: '11px 10px', borderRadius: 12, background: fresh ? 'rgba(109,141,255,.12)' : 'transparent' }}>
+                            <span style={{ width: 8, height: 8, borderRadius: 4, marginTop: 6, flexShrink: 0, background: n.action === 'ADMIN_PENALTY' || isReport ? 'var(--red)' : fresh ? 'var(--cyan)' : 'var(--line-strong)' }} />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: '.86rem', fontWeight: 600, lineHeight: 1.45 }}>{text}</div>
+                              <div className="sl-faint" style={{ fontSize: '.74rem', marginTop: 2 }}>{(n.createdAt || n.timestamp)?.toDate ? (n.createdAt || n.timestamp).toDate().toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '방금 전'}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
             <button className="sl-avatar" title="마이페이지" onClick={() => go('MYPAGE')}>{displayName.slice(0, 1)}</button>
             <button className="sl-icon-btn" title="로그아웃" onClick={async () => { if (window.confirm('로그아웃 하시겠습니까?')) await signOut(auth); }}><Icon name="logout" size={18} /></button>
           </div>
@@ -401,7 +624,7 @@ function App() {
         {viewMode === 'MYPAGE' && <MyPage user={user} currentUserData={currentUserData} isAdmin={isAdmin} setViewMode={setViewMode} adminItems={isAdmin ? adminItems : []} />}
         {viewMode === 'SCANNER' && isAdmin && <ScannerPage setViewMode={setViewMode} setSystemAlert={setSystemAlert} />}
         {viewMode === 'RANKING' && <RankingPage onBack={() => go('HOME')} user={user} currentUserData={currentUserData} />}
-        {viewMode === 'SEARCH' && <BookSearch onBack={() => go('HOME')} user={user} currentUserData={currentUserData} isAdmin={isAdmin} />}
+        {(viewMode === 'SEARCH' || viewMode === 'BOOKS') && <BookSearch onBack={() => go('HOME')} user={user} currentUserData={currentUserData} isAdmin={isAdmin} />}
         {viewMode === 'EVENTS' && <EventBoard initialTab={boardTab} onBack={() => go('HOME')} onSelectEvent={(ev) => { setSelectedEvent(ev); setViewMode('EVENT_DETAIL'); }} onSelectNotice={(n) => { setSelectedEvent({ ...n, _type: 'NOTICE' }); setViewMode('EVENT_DETAIL'); }} />}
         {viewMode === 'EVENT_DETAIL' && <EventDetail event={selectedEvent} onBack={() => setViewMode('EVENTS')} />}
         {viewMode === 'EVENTS_ADMIN' && isAdmin && <AdminEvents />}
@@ -471,6 +694,12 @@ function App() {
             </section>
 
             <div ref={scrollRef} className="sl-container">
+              {showRankingBanner && (
+                <section style={{ marginBottom: 20 }}>
+                  <RankingBanner onEnter={() => go('RANKING')} onClose={() => setShowRankingBanner(false)} />
+                </section>
+              )}
+
               {/* 바로가기 */}
               <section className="sl-section">
                 <div className="sl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14 }}>
@@ -563,6 +792,10 @@ function App() {
                 </div>
               </section>
 
+              <section className="sl-section">
+                <EventBanner onSeeAll={() => go('EVENTS', { tab: 'EVENT' })} onSelectEvent={(ev) => { setSelectedEvent(ev); setViewMode('EVENT_DETAIL'); window.scrollTo({ top: 0 }); }} />
+              </section>
+
               <footer className="sl-faint" style={{ textAlign: 'center', fontSize: '.78rem', padding: '8px 0 40px' }}>
                 © 2026 Ulsan College Smart Library · 운영시간 09:00 – 23:00
               </footer>
@@ -589,9 +822,25 @@ function App() {
               </div>
 
               {isBookingMode && (
+                <div className="sl-row hide-scroll" style={{ gap: 8, overflowX: 'auto', marginBottom: 14, paddingBottom: 2 }}>
+                  {[...Array(7).keys()].map(i => {
+                    const d = addDays(startOfDay(new Date()), i);
+                    const on = format(d, 'yyyy-MM-dd') === format(selectedDate, 'yyyy-MM-dd');
+                    const dow = d.getDay();
+                    return (
+                      <button key={i} onClick={() => setSelectedDate(d)} style={{ flex: '1 0 58px', minWidth: 58, height: 62, borderRadius: 16, cursor: 'pointer', border: on ? 0 : '1px solid var(--line)', background: on ? 'var(--grad)' : 'rgba(255,255,255,.03)', color: on ? '#fff' : dow === 0 ? '#fecdd3' : dow === 6 ? '#c7d2fe' : 'var(--text)', boxShadow: on ? 'var(--shadow-glow)' : 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+                        <span style={{ fontSize: '.72rem', fontWeight: 700, opacity: .85 }}>{i === 0 ? '오늘' : format(d, 'E', { locale: ko })}</span>
+                        <span className="sl-num" style={{ fontSize: '1.1rem', fontWeight: 850 }}>{format(d, 'd')}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {isBookingMode && (
                 <div className="sl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 12, marginBottom: 18 }}>
                   <label className="sl-field">
-                    <span className="sl-label"><Icon name="calendar" size={13} style={{ verticalAlign: -2, marginRight: 4 }} />날짜</span>
+                    <span className="sl-label"><Icon name="calendar" size={13} style={{ verticalAlign: -2, marginRight: 4 }} />날짜 (최대 2주)</span>
                     <input className="sl-input" type="date" value={format(selectedDate, 'yyyy-MM-dd')} min={todayStr} max={format(addDays(new Date(), 14), 'yyyy-MM-dd')}
                       onChange={(e) => { if (e.target.value) setSelectedDate(new Date(`${e.target.value}T00:00:00`)); }} style={{ fontWeight: 700 }} />
                   </label>
@@ -628,7 +877,7 @@ function App() {
               </div>
             </div>
 
-            <FloorMap activeFloor={activeFloor} title={floorTitles[activeFloor]} seats={seats} isAdmin={isAdmin} setSelectedSeat={setSelectedSeat} onUpdateSeats={updateSeatsLayout} onDeleteSeat={handleDeleteSeat} myEmail={user?.email} />
+            <FloorMap activeFloor={activeFloor} title={floorTitles[activeFloor]} seats={displaySeats} isAdmin={isAdmin} setSelectedSeat={handleSeatSelect} onUpdateSeats={updateSeatsLayout} onDeleteSeat={handleDeleteSeat} myEmail={user?.email} />
 
             <SeatModal selectedSeat={selectedSeat} setSelectedSeat={setSelectedSeat} user={user} isAdmin={isAdmin} currentUserData={currentUserData}
               selectedDate={selectedDate} startTime={startTime} endTime={endTime} isExamPeriod={systemSettings?.isExamActive}
