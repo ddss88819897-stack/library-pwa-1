@@ -76,7 +76,8 @@ export default function BookSearch({ onBack, user, currentUserData, isAdmin }) {
 
   // 3. 검색어 입력 시 인기검색어 카운트 증가 (디바운스)
   useEffect(() => {
-    const term = searchTerm.trim();
+    // Firestore 문서 ID에는 '/' 를 쓸 수 없고 '.', '..' 도 불가 → 정리 후 저장
+    const term = searchTerm.trim().replace(/\//g, ' ').replace(/^\.+$/, '').slice(0, 100);
     if (term.length < 2) return;
     const timer = setTimeout(async () => {
       const matched = allBooks.some(b => 
@@ -86,7 +87,7 @@ export default function BookSearch({ onBack, user, currentUserData, isAdmin }) {
       );
       if (matched) {
         const keywordRef = doc(db, 'SearchKeywords', term);
-        await setDoc(keywordRef, { count: increment(1), updatedAt: serverTimestamp() }, { merge: true });
+        await setDoc(keywordRef, { count: increment(1), updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
 
         // ==========================================
         // 장 혁님께서 만든 코드 시작 (개인 맞춤형 검색 데이터 파이어베이스 저장)
@@ -94,7 +95,7 @@ export default function BookSearch({ onBack, user, currentUserData, isAdmin }) {
         // ==========================================
         if (myId && myId !== '익명') {
           const myKeywordRef = doc(db, 'UserSearchHistory', myId, 'Keywords', term);
-          await setDoc(myKeywordRef, { count: increment(1), updatedAt: serverTimestamp() }, { merge: true });
+          await setDoc(myKeywordRef, { count: increment(1), updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
         }
         // ==========================================
         // 장 혁님께서 만든 코드 끝
@@ -153,7 +154,7 @@ export default function BookSearch({ onBack, user, currentUserData, isAdmin }) {
         status: book.availableQuantity > 0 ? '대출가능' : (updatedReservations.length > 0 ? '예약대기중' : '대출중')
       });
       alert("✅ 예약이 취소되었습니다.");
-    } catch (e) {
+    } catch {
       alert("예약 취소 중 오류가 발생했습니다.");
     }
   };

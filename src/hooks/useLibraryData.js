@@ -1,72 +1,51 @@
 import { useState, useEffect } from 'react';
-import { auth, db } from '../firebase'; 
+import { auth, db } from '../firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore'; 
+import { doc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 import { subscribeToSeats } from '../api/seatApi';
 
 export const useLibraryData = () => {
   const [seats, setSeats] = useState([]);
   const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
   const [currentUserData, setCurrentUserData] = useState(null);
 
-  // 1. 좌석 정보 실시간 구독 (공용 데이터)
+  // 1. 로그인 상태 감시 (첫 응답 전까지는 로그인 화면이 깜빡이지 않도록 authReady 로 구분)
   useEffect(() => {
-    // 🚨 핵심: 로그인이 안 되어 있으면 좌석 데이터를 부르지 않음 (권한 에러 방지)
-    if (!user) {
-      setSeats([]);
-      return;
-    }
-
-    const unsubscribeSeats = subscribeToSeats((fetchedSeats) => {
-      setSeats(fetchedSeats);
-    });
-    return () => unsubscribeSeats();
-  }, [user]); // [] 대신 [user]를 넣어야 합니다.
-
-  // 2. 로그인 상태 감시
-  useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
+    const unsubscribeAuth = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
     return () => unsubscribeAuth();
   }, []);
 
-  // 3. 내 상세 정보(User 컬렉션) 구독: 기존 학번 데이터 유지 + 실시간 동기화
+  // 2. 좌석 실시간 구독 (로그인 후에만 → 권한 에러 방지)
+  useEffect(() => {
+    if (!user) { setSeats([]); return; }
+    const unsubscribeSeats = subscribeToSeats(setSeats);
+    return () => unsubscribeSeats();
+  }, [user]);
+
+  // 3. 내 User 문서 실시간 구독 (문서 ID가 uid / 학번 어느 쪽이든 email 로 찾아서 연결)
   useEffect(() => {
     let isMounted = true;
     let unsubUser = () => {};
 
     const findAndSubscribe = async () => {
-      if (!user || !user.email) {
-        setCurrentUserData(null);
-        return;
-      }
-
+      if (!user || !user.email) { setCurrentUserData(null); return; }
       try {
-        // 1. 이메일로 문서 조회 (기존 학번 문서 ID를 찾기 위함)
-        const q = query(collection(db, "User"), where("email", "==", user.email));
-        const querySnapshot = await getDocs(q);
-
-        if (!querySnapshot.empty && isMounted) {
-          const docId = querySnapshot.docs[0].id;
-          
-          // 2. 찾은 문서ID(학번)로 실시간 리스너 연결
-          unsubUser = onSnapshot(doc(db, "User", docId), (snap) => {
-            if (snap.exists() && isMounted) {
-              setCurrentUserData({ ...snap.data(), id: snap.id });
-            }
-          });
-        }
+        const snap = await getDocs(query(collection(db, 'User'), where('email', '==', user.email)));
+        let docId = snap.empty ? null : snap.docs[0].id;
+        if (!docId) docId = user.email.split('@')[0]; // 기존 테스트 계정(학번 문서) 대응
+        if (!isMounted) return;
+        unsubUser = onSnapshot(doc(db, 'User', docId), (s) => {
+          if (isMounted) setCurrentUserData(s.exists() ? { ...s.data(), id: s.id } : null);
+        }, () => {});
       } catch (error) {
-        console.error("데이터 로드 오류:", error);
+        console.error('데이터 로드 오류:', error);
       }
     };
 
     findAndSubscribe();
-
-    return () => {
-      isMounted = false; // 컴포넌트가 사라지면 작업 중단
-      unsubUser();       // 리스너 구독 해제
-    };
+    return () => { isMounted = false; unsubUser(); };
   }, [user]);
 
-  return { seats, user, currentUserData };
+  return { seats, user, currentUserData, authReady };
 };

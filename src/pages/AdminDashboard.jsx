@@ -82,7 +82,7 @@ export default function AdminDashboard() {
       }, { merge: true });
       setIsExamActive(true);
       alert("✅ 시험기간 통제가 시작되었습니다.");
-    } catch (e) { alert("저장 중 오류가 발생했습니다."); }
+    } catch { alert("저장 중 오류가 발생했습니다."); }
   };
 
   const clearExamPeriod = async () => {
@@ -92,7 +92,7 @@ export default function AdminDashboard() {
       }, { merge: true });
       setIsExamActive(false); setExamStartDate(''); setExamEndDate('');
       alert("❌ 시험기간 통제가 해제되었습니다.");
-    } catch (e) { alert("해제 중 오류가 발생했습니다."); }
+    } catch { alert("해제 중 오류가 발생했습니다."); }
   };
 
   useEffect(() => {
@@ -103,22 +103,26 @@ export default function AdminDashboard() {
   const loadUsers = async () => {
     try {
       const querySnapshot = await getDocs(collection(db, "User"));
-      const usersMap = {}; 
-      querySnapshot.docs.forEach(d => { usersMap[d.id] = d.data(); });
-      setUsersList(Object.values(usersMap));
+      const usersMap = {};   // 여러 키(문서ID · 이메일 앞부분 · 학번) → 사용자
+      const usersArr = querySnapshot.docs.map(d => ({ ...d.data(), id: d.id }));
+      usersArr.forEach(u => {
+        [u.id, u.studentNo, u.email?.split('@')[0]].filter(Boolean).forEach(k => { usersMap[String(k)] = u; });
+      });
+      setUsersList(usersArr);
 
       const logsSnap = await getDocs(collection(db, 'Log'));
       const logs = await Promise.all(logsSnap.docs.map(async (d) => {
         const data = d.data();
         let realName = '추적 불가';
         let studentNo = data.uid?.split('@')[0] || '';
-        if (studentNo && usersMap[studentNo]) { realName = usersMap[studentNo].name || '이름 없음'; }
+        let targetDocId = '';
+        if (studentNo && usersMap[studentNo]) { realName = usersMap[studentNo].name || '이름 없음'; targetDocId = usersMap[studentNo].id; studentNo = usersMap[studentNo].studentNo || studentNo; }
 
         let reporterName = '이름 없음';
         let reporterNo = data.reporter?.split('@')[0] || '';
         if (reporterNo && usersMap[reporterNo]) { reporterName = usersMap[reporterNo].name || '이름 없음'; }
 
-        return { id: d.id, ...data, realName, studentNo, reporterName, reporterNo };
+        return { id: d.id, ...data, realName, studentNo, targetDocId, reporterName, reporterNo };
       }));
 
       setReportsList(logs.filter(l => {
@@ -177,13 +181,13 @@ export default function AdminDashboard() {
         await updateDoc(userRef, { penaltyUntil: null, resetCount: increment(1) });
         alert(`✅ 해제되었습니다.`);
         loadUsers(); 
-      } catch (error) { alert("오류가 발생했습니다."); }
+      } catch { alert("오류가 발생했습니다."); }
     }
   };
 
   const submitAction = async () => {
     if (!actionReport) return;
-    const targetId = actionReport.studentNo;
+    const targetId = actionReport.targetDocId || actionReport.studentNo;
     if (!targetId || targetId === '정보 없음' || targetId === '추적 불가') return alert("🚨 대상(피신고자)이 특정되지 않아 직접 제재를 가할 수 없습니다.");
 
     const selectedOption = actionOptions.find(opt => opt.value === actionType);
@@ -214,25 +218,25 @@ export default function AdminDashboard() {
       alert(`✅ 조치가 완료되었습니다.`);
       setActionReport(null); 
       loadUsers();
-    } catch (e) { alert("처리 중 오류가 발생했습니다."); }
+    } catch { alert("처리 중 오류가 발생했습니다."); }
   };
 
   const handleDismissReport = async (reportId) => {
     if (!window.confirm("신고 내용을 반려(삭제)하시겠습니까?")) return;
     try { await deleteDoc(doc(db, "Log", reportId)); loadUsers(); } 
-    catch (e) { alert("오류가 발생했습니다."); }
+    catch { alert("오류가 발생했습니다."); }
   };
 
   const handleResolveAppeal = async (appealId) => {
     if (!window.confirm("이 접수 건을 '확인 완료' 처리하시겠습니까?")) return;
     try { await updateDoc(doc(db, "Appeals", appealId), { status: 'RESOLVED' }); alert("✅ 확인 완료 처리되었습니다."); loadUsers(); } 
-    catch (e) { alert("오류가 발생했습니다."); }
+    catch { alert("오류가 발생했습니다."); }
   };
 
   const handleDeleteAppeal = async (appealId) => {
     if (!window.confirm("이 접수 내역을 완전히 삭제하시겠습니까?")) return;
     try { await deleteDoc(doc(db, "Appeals", appealId)); loadUsers(); } 
-    catch (e) { alert("오류가 발생했습니다."); }
+    catch { alert("오류가 발생했습니다."); }
   };
 
   const openViewer = (photos, index) => { setViewerPhotos(photos); setCurrentPhotoIndex(index); };
@@ -247,7 +251,7 @@ export default function AdminDashboard() {
         const [dStr, tStr] = existingVal.split('T');
         const parsedDate = new Date(dStr);
         setPickerDate(parsedDate); setPickerMonth(parsedDate); setPickerTime(tStr || "09:00");
-      } catch (e) { setPickerDate(new Date()); setPickerMonth(new Date()); setPickerTime("09:00"); }
+      } catch { setPickerDate(new Date()); setPickerMonth(new Date()); setPickerTime("09:00"); }
     } else { setPickerDate(new Date()); setPickerMonth(new Date()); setPickerTime("09:00"); }
   };
 
@@ -332,6 +336,49 @@ export default function AdminDashboard() {
   return (
     <div style={{ width: '100%', minHeight: '100vh', padding: isMobile ? '10px' : '20px', boxSizing: 'border-box' }}>
        <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '25px' }}>
+
+         {/* 🛡️ 신고 조치 모달 ('조치' 버튼이 눌러도 아무 반응이 없던 문제 수정) */}
+         {actionReport && (
+           <div className="sl-overlay" onClick={() => setActionReport(null)}>
+             <div className="sl-modal" onClick={(e) => e.stopPropagation()}>
+               <div className="sl-modal-head">
+                 <div>
+                   <span className="sl-chip red" style={{ marginBottom: 10 }}>제재 조치</span>
+                   <h3 className="sl-h2">{actionReport.realName} <span className="sl-faint" style={{ fontSize: '1rem' }}>({actionReport.studentNo || '대상 불명'})</span></h3>
+                 </div>
+                 <button className="sl-icon-btn" onClick={() => setActionReport(null)}>✕</button>
+               </div>
+               <div style={{ padding: 14, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--line)', marginBottom: 16, fontSize: '.9rem', lineHeight: 1.6 }}>
+                 <div><span className="sl-faint">좌석</span> · {actionReport.seatLabel || actionReport.seatId || '-'}</div>
+                 <div><span className="sl-faint">사유</span> · {actionReport.result || actionReport.reason || '사유 없음'}</div>
+                 {actionReport.appealReason && <div style={{ color: '#c7d2fe' }}><span className="sl-faint">소명</span> · {actionReport.appealReason}</div>}
+               </div>
+               <div className="sl-stack" style={{ gap: 8 }}>
+                 {actionOptions.map(opt => (
+                   <button key={opt.value} className={`sl-btn block ${actionType === opt.value ? 'primary' : ''}`} style={{ justifyContent: 'flex-start' }} onClick={() => setActionType(opt.value)}>{opt.label}</button>
+                 ))}
+               </div>
+               <div className="sl-row" style={{ marginTop: 18 }}>
+                 <button className="sl-btn" style={{ flex: 1 }} onClick={() => setActionReport(null)}>취소</button>
+                 <button className="sl-btn danger-solid" style={{ flex: 2 }} onClick={submitAction}>조치 실행</button>
+               </div>
+             </div>
+           </div>
+         )}
+
+         {/* 🖼️ 증거 사진 뷰어 */}
+         {viewerPhotos.length > 0 && (
+           <div className="sl-overlay" style={{ zIndex: 10030, flexDirection: 'column', gap: 16 }} onClick={closeViewer}>
+             <img src={viewerPhotos[currentPhotoIndex]} alt="증거 사진" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 'min(92vw, 900px)', maxHeight: '76svh', borderRadius: 18, objectFit: 'contain', boxShadow: '0 30px 80px rgba(0,0,0,.7)' }} />
+             {viewerPhotos.length > 1 && (
+               <div className="sl-row" onClick={(e) => e.stopPropagation()}>
+                 <button className="sl-btn sm" onClick={() => setCurrentPhotoIndex((currentPhotoIndex - 1 + viewerPhotos.length) % viewerPhotos.length)}>◀ 이전</button>
+                 <span className="sl-num sl-muted" style={{ fontWeight: 700 }}>{currentPhotoIndex + 1} / {viewerPhotos.length}</span>
+                 <button className="sl-btn sm" onClick={() => setCurrentPhotoIndex((currentPhotoIndex + 1) % viewerPhotos.length)}>다음 ▶</button>
+               </div>
+             )}
+           </div>
+         )}
 
          {/* 피커 모달 (글래스모피즘 테마 적용) */}
          {pickerTarget && (
@@ -589,7 +636,7 @@ export default function AdminDashboard() {
                               {isSuspended ? (u.penaltyUntil.toDate ? u.penaltyUntil.toDate().toLocaleString('ko-KR', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : new Date(u.penaltyUntil).toLocaleString()) : '-'}
                             </td>
                             <td style={{ ...tdStyle, display: 'flex', justifyContent: 'center' }}>
-                              {isSuspended && (<button onClick={() => handleResetPenaltyOnly(u.studentNo, u.name)} style={{ padding: '6px 10px', background: 'rgba(59, 130, 246, 0.8)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: '900', cursor: 'pointer', fontSize: '0.8rem' }}>사면 처리</button>)}
+                              {isSuspended && (<button onClick={() => handleResetPenaltyOnly(u.id, u.name)} style={{ padding: '6px 10px', background: 'rgba(59, 130, 246, 0.8)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: '900', cursor: 'pointer', fontSize: '0.8rem' }}>사면 처리</button>)}
                             </td>
                           </tr>
                         );

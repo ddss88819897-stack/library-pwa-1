@@ -18,7 +18,7 @@ export default function EventDetail({ event, onBack }) {
       }
       // 일반 문자열이나 Date 객체인 경우
       return format(new Date(dateValue), 'yyyy.MM.dd HH:mm');
-    } catch (e) {
+    } catch {
       return '날짜 정보 없음';
     }
   };

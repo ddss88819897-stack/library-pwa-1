@@ -8,12 +8,12 @@ export const subscribeToSeats = (setSeats) => {
   const unsubscribe = onSnapshot(seatCollection, { includeMetadataChanges: true }, (snapshot) => {
     const seatList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     setSeats(seatList);
-  });
+  }, (error) => console.error('좌석 구독 오류:', error));
   return unsubscribe;
 };
 
 // 2. 좌석 상태 업데이트 및 🧾 영수증(Log) 자동 발행기
-export const updateSeatStatus = async (seatId, newStatus, userId = null, hours = 0, userName = "", reminderMinutes = 20, studentNo = "") => {
+export const updateSeatStatus = async (seatId, newStatus, userId = null, hours = 0, userName = "", reminderMinutes = 20, studentNo = "", options = {}) => {
   try {
     const seatRef = doc(db, "Seat", seatId);
     const seatSnap = await getDoc(seatRef);
@@ -64,8 +64,10 @@ export const updateSeatStatus = async (seatId, newStatus, userId = null, hours =
       }
     }
 
+    if (options.logAction) actionType = options.logAction;
+    if (options.logResult) resultMessage = options.logResult;
+
     await setDoc(seatRef, updateData, { merge: true });
-    console.log(`✅ ${seatId} 상태 변경 완료! -> ${newStatus}`);
 
     const targetUserId = userId || seatData?.userId;
     const targetStudentNo = studentNo || userName || seatData?.studentNo || seatData?.userName;
@@ -111,7 +113,6 @@ export const updateSeatsLayout = async (updatedSeats) => {
 
     // 파이어베이스로 일괄 전송
     await batch.commit();
-    console.log("✅ 모든 좌석 배치도가 파이어베이스에 안전하게 저장되었습니다.");
   } catch (error) {
     console.error("🚨 좌석 배치 일괄 저장 중 오류 발생:", error);
     throw error;

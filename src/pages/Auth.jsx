@@ -1,367 +1,268 @@
 import React, { useState } from 'react';
-import { auth, db } from '../firebase'; 
+import { auth, db } from '../firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, signOut, updatePassword, updateProfile } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore'; 
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import Icon from '../components/Icon';
+
+const TEMP_PASS = 'Temp!@#123';
+const SAVED_ID_KEY = 'smartlib:savedLoginId';
+
+const readSavedId = () => { try { return localStorage.getItem(SAVED_ID_KEY) || ''; } catch { return ''; } };
+const writeSavedId = (v) => { try { if (v) localStorage.setItem(SAVED_ID_KEY, v); else localStorage.removeItem(SAVED_ID_KEY); } catch { /* 저장소 차단 */ } };
 
 const Auth = ({ isExamPeriod }) => {
-  const [loginId, setLoginId] = useState(''); 
+  const [loginId, setLoginId] = useState(readSavedId);
+  const [rememberId, setRememberId] = useState(() => !!readSavedId());
   const [realEmail, setRealEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [passwordConfirm, setPasswordConfirm] = useState(''); 
+  const [passwordConfirm, setPasswordConfirm] = useState('');
   const [name, setName] = useState('');
   const [studentId, setStudentId] = useState('');
   const [agreed, setAgreed] = useState(false);
-  
-  const [isSignUpMode, setIsSignUpMode] = useState(false);
-  const [isForgotPasswordMode, setIsForgotPasswordMode] = useState(false);
-  
+  const [mode, setMode] = useState('LOGIN'); // LOGIN | SIGNUP | FORGOT
   const [signUpStep, setSignUpStep] = useState(1);
   const [signupType, setSignupType] = useState('SELECT');
-  const [resetStudentId, setResetStudentId] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
-  const TEMP_PASS = "Temp!@#123"; 
-
-  const handleCancelRegistration = async () => {
-    if (signUpStep > 1 && auth.currentUser) {
-      try { await auth.currentUser.delete(); } catch(e) {}
-    }
-    setIsSignUpMode(false);
-    setSignupType('SELECT');
-    setSignUpStep(1);
-    setRealEmail('');
-    setStudentId('');
-    setPassword('');
-    setPasswordConfirm('');
-    setName('');
-    setAgreed(false);
+  const run = async (fn) => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try { await fn(); } finally { setBusy(false); }
   };
 
-  return (
-    <>
-      {/* 🌊 블루 톤 & 퓨어 글래스모피즘 CSS */}
-      <style>{`
-        .glass-container {
-          display: flex;
-          width: 950px;
-          max-width: 95%;
-          min-height: 600px;
-          /* 핵심: 완전 투명한 바탕에 흰색을 살짝만 섞어 유리 느낌 극대화 */
-          background: rgba(255, 255, 255, 0.05);
-          backdrop-filter: blur(24px);
-          -webkit-backdrop-filter: blur(24px);
-          border: 1px solid rgba(255, 255, 255, 0.2);
-          border-right: 1px solid rgba(255, 255, 255, 0.1);
-          border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 24px;
-          box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255,255,255,0.3);
-          overflow: hidden;
-          z-index: 10;
-        }
-        .left-pane {
-          flex: 1;
-          /* 시원한 블루톤 이미지 오버레이 */
-          background: linear-gradient(to bottom, rgba(15, 23, 42, 0.4), rgba(30, 58, 138, 0.85)), url('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?q=80&w=1000&auto=format&fit=crop') center/cover;
-          position: relative;
-          padding: 40px;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
-        }
-        .right-pane {
-          flex: 1.2;
-          padding: 50px 60px;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          background: rgba(255, 255, 255, 0.02); /* 오른쪽 폼 영역은 투명도를 높여 뒤가 더 잘 보이게 */
-        }
-        .form-input {
-          width: 100%;
-          padding: 16px 20px;
-          background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255, 255, 255, 0.2);
-          border-radius: 12px;
-          color: #fff;
-          font-size: 0.95rem;
-          transition: all 0.3s ease;
-          box-sizing: border-box;
-          backdrop-filter: blur(10px);
-        }
-        .form-input::placeholder { color: rgba(255, 255, 255, 0.5); font-weight: 500; }
-        .form-input:focus { background: rgba(255, 255, 255, 0.12); border-color: #60a5fa; outline: none; box-shadow: 0 0 15px rgba(96, 165, 250, 0.3); }
-        
-        .primary-btn {
-          width: 100%;
-          padding: 16px;
-          /* 시원하고 강렬한 블루 그라데이션 */
-          background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
-          color: #fff;
-          border: 1px solid rgba(255,255,255,0.2);
-          border-radius: 12px;
-          font-weight: 800;
-          font-size: 1rem;
-          cursor: pointer;
-          transition: 0.3s;
-          text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-        }
-        .primary-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(37, 99, 235, 0.4); }
-        
-        .social-btn {
-          flex: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 10px;
-          padding: 14px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          border-radius: 12px;
-          color: #fff;
-          font-size: 0.9rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: 0.3s;
-        }
-        .social-btn:hover { background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.3); }
-        
-        .text-link { color: #93c5fd; cursor: pointer; transition: 0.2s; text-decoration: none; font-weight: 700; }
-        .text-link:hover { color: #fff; text-shadow: 0 0 8px rgba(147, 197, 253, 0.8); }
-        
-        /* 모바일 반응형 처리 */
-        @media (max-width: 850px) {
-          .left-pane { display: none; }
-          .right-pane { padding: 40px 30px; }
-          .glass-container { width: 90%; min-height: auto; }
-        }
+  const resetSignup = async () => {
+    if (signUpStep > 1 && auth.currentUser && !auth.currentUser.displayName) {
+      try { await auth.currentUser.delete(); } catch { /* 이미 삭제됨 */ }
+    }
+    setMode('LOGIN'); setSignupType('SELECT'); setSignUpStep(1);
+    setRealEmail(''); setStudentId(''); setPassword(''); setPasswordConfirm(''); setName(''); setAgreed(false); setError('');
+  };
 
-        /* 오로라 빛 애니메이션 */
-        @keyframes blob-bounce { 0% { transform: translate(0, 0) scale(1); } 50% { transform: translate(30px, -40px) scale(1.1); } 100% { transform: translate(0, 0) scale(1); } }
+  const handleLogin = (e) => {
+    e.preventDefault();
+    run(async () => {
+      if (!loginId || !password) return setError('아이디와 비밀번호를 입력해 주세요.');
+      const email = loginId.includes('@') ? loginId.trim() : `${loginId.trim()}@test.com`;
+      try {
+        const cred = await signInWithEmailAndPassword(auth, email, password);
+        if (!email.includes('@test.com') && !cred.user.emailVerified) {
+          await signOut(auth);
+          return setError('이메일 인증이 완료되지 않았습니다. 메일함을 확인해 주세요.');
+        }
+        writeSavedId(rememberId ? loginId.trim() : '');
+      } catch {
+        setError('아이디 또는 비밀번호가 올바르지 않습니다.');
+      }
+    });
+  };
+
+  const sendVerification = () => run(async () => {
+    if (!realEmail || !/^\S+@\S+\.\S+$/.test(realEmail)) return setError('올바른 이메일 주소를 입력해 주세요.');
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, realEmail, TEMP_PASS);
+      await sendEmailVerification(cred.user);
+      setSignUpStep(2);
+    } catch (e) {
+      if (e.code === 'auth/email-already-in-use') {
+        try {
+          const cred = await signInWithEmailAndPassword(auth, realEmail, TEMP_PASS);
+          await sendEmailVerification(cred.user);
+          setSignUpStep(2);
+        } catch { setError('이미 가입이 완료된 이메일입니다. 로그인해 주세요.'); }
+      } else setError(e.message);
+    }
+  });
+
+  const checkVerification = () => run(async () => {
+    if (!auth.currentUser) return setError('세션이 만료되었습니다. 처음부터 다시 진행해 주세요.');
+    await auth.currentUser.reload();
+    if (auth.currentUser.emailVerified) setSignUpStep(3);
+    else setError('아직 인증되지 않았습니다. 메일의 링크를 눌러 주세요.');
+  });
+
+  const createAccount = () => run(async () => {
+    if (!name.trim() || !studentId.trim()) return setError('이름과 학번(연락처)을 모두 입력해 주세요.');
+    if (password.length < 6) return setError('비밀번호는 6자 이상이어야 합니다.');
+    if (password !== passwordConfirm) return setError('비밀번호가 일치하지 않습니다.');
+    if (!agreed) return setError('이용 약관에 동의해 주세요.');
+    try {
+      await updatePassword(auth.currentUser, password);
+      await updateProfile(auth.currentUser, { displayName: name.trim() });
+      await setDoc(doc(db, 'User', auth.currentUser.uid), {
+        name: name.trim(), studentNo: studentId.trim(), email: realEmail, role: signupType === 'STUDENT' ? 'CLIENT' : 'GUEST', createdAt: serverTimestamp()
+      });
+      await signOut(auth);
+      alert('🎉 가입이 완료되었습니다! 새 비밀번호로 로그인해 주세요.');
+      setLoginId(realEmail);
+      resetSignup();
+    } catch (e) { setError('가입 오류: ' + e.message); }
+  });
+
+  const sendReset = () => run(async () => {
+    if (!resetEmail || !resetEmail.includes('@')) return setError('올바른 이메일 주소를 입력해 주세요.');
+    try {
+      await sendPasswordResetEmail(auth, resetEmail, { url: `${window.location.origin}/reset-password`, handleCodeInApp: true });
+      alert('✅ 재설정 메일을 보냈습니다. 메일함을 확인해 주세요.');
+      setMode('LOGIN'); setResetEmail('');
+    } catch (e) { setError(e.message); }
+  });
+
+  const steps = ['이메일 인증', '인증 확인', '정보 입력'];
+
+  return (
+    <div style={{ position: 'relative', minHeight: '100svh', display: 'grid', placeItems: 'center', padding: '24px 16px', overflow: 'hidden', background: 'var(--bg)' }}>
+      <div className="sl-ambient"><div className="sl-orb a" /><div className="sl-orb b" /><div className="sl-orb c" /></div>
+      <style>{`
+        .auth-wrap { position: relative; z-index: 1; width: 100%; max-width: 1040px; display: grid; grid-template-columns: 1.05fr 1fr; border-radius: 36px; overflow: hidden;
+          border: 1px solid var(--line-strong); background: rgba(10,14,30,.72); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px);
+          box-shadow: 0 50px 120px -30px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.08); animation: sl-pop .6s var(--ease); }
+        .auth-art { position: relative; padding: 44px; display: flex; flex-direction: column; justify-content: space-between; min-height: 620px; overflow: hidden;
+          background: radial-gradient(120% 90% at 0% 0%, rgba(109,141,255,.55), transparent 55%), radial-gradient(90% 80% at 100% 100%, rgba(56,217,245,.35), transparent 55%), radial-gradient(80% 70% at 100% 0%, rgba(155,123,255,.45), transparent 60%), #0a0f24; }
+        .auth-art::after { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px); background-size: 44px 44px; mask-image: linear-gradient(180deg, #000, transparent 85%); -webkit-mask-image: linear-gradient(180deg, #000, transparent 85%); pointer-events: none; }
+        .auth-form { padding: 52px 52px 44px; display: flex; flex-direction: column; justify-content: center; }
+        .auth-book { position: absolute; right: -40px; top: 46%; width: 300px; height: 300px; border-radius: 60px; transform: rotate(-14deg);
+          background: linear-gradient(150deg, rgba(255,255,255,.18), rgba(255,255,255,.02)); border: 1px solid rgba(255,255,255,.22); backdrop-filter: blur(6px); display: grid; place-items: center; }
+        @media (max-width: 880px) {
+          .auth-wrap { grid-template-columns: 1fr; max-width: 480px; border-radius: 30px; }
+          .auth-art { min-height: 0; padding: 28px 28px 26px; }
+          .auth-art .auth-hero, .auth-book { display: none; }
+          .auth-form { padding: 30px 26px 30px; }
+        }
       `}</style>
 
-      {/* 🌌 전체 배경 & 블루 오로라 블러 효과 */}
-      <div style={{ position: 'relative', width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#020617', overflow: 'hidden', fontFamily: "'Inter', sans-serif" }}>
-        
-        {/* 파란색 계열의 둥근 빛 (오로라) */}
-        <div style={{ position: 'absolute', top: '5%', left: '15%', width: '450px', height: '450px', background: '#1e3a8a', borderRadius: '50%', filter: 'blur(160px)', opacity: 0.6, animation: 'blob-bounce 15s infinite ease-in-out' }} />
-        <div style={{ position: 'absolute', bottom: '5%', right: '15%', width: '500px', height: '500px', background: '#0284c7', borderRadius: '50%', filter: 'blur(160px)', opacity: 0.5, animation: 'blob-bounce 18s infinite ease-in-out reverse' }} />
-        <div style={{ position: 'absolute', top: '40%', left: '40%', width: '300px', height: '300px', background: '#3b82f6', borderRadius: '50%', filter: 'blur(140px)', opacity: 0.3 }} />
-
-        {/* 메인 글래스 컨테이너 */}
-        <div className="glass-container">
-          
-          {/* ==========================================
-              좌측 패널 (브랜딩 이미지 영역)
-              ========================================== */}
-          <div className="left-pane">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" style={{ width: '28px', height: '28px' }}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.315 48.315 0 0012 9.75c-2.551 0-5.056.2-7.5.582V21M3 21h18M12 6.75h.008v.008H12V6.75z" />
-                </svg>
-                <span style={{ color: '#fff', fontWeight: '900', fontSize: '1.2rem', letterSpacing: '1px' }}>SMART LIB</span>
-              </div>
-              <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.85rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: '600' }}>
-                홈으로 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{width:'14px'}}><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-              </span>
-            </div>
-            
-            <div>
-              <h2 style={{ color: '#fff', fontSize: '2.4rem', fontWeight: '900', lineHeight: '1.3', margin: '0 0 15px 0', textShadow: '0 2px 10px rgba(0,0,0,0.3)' }}>지식의 경계를 넘어,<br/>나를 뛰어넘는다</h2>
-              <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '1rem', margin: 0, fontWeight: '500' }}>울산과학대학교 스마트 도서관</p>
-              
-              <div style={{ display: 'flex', gap: '8px', marginTop: '40px' }}>
-                <div style={{ width: '30px', height: '4px', background: '#fff', borderRadius: '2px', boxShadow: '0 0 10px rgba(255,255,255,0.5)' }} />
-                <div style={{ width: '30px', height: '4px', background: 'rgba(255,255,255,0.2)', borderRadius: '2px' }} />
-                <div style={{ width: '30px', height: '4px', background: 'rgba(255,255,255,0.2)', borderRadius: '2px' }} />
-              </div>
-            </div>
+      <div className="auth-wrap">
+        {/* 브랜딩 패널 */}
+        <div className="auth-art">
+          <div className="sl-row" style={{ position: 'relative', zIndex: 1 }}>
+            <span className="sl-brand-mark"><Icon name="book" size={18} stroke={2.2} style={{ color: '#fff' }} /></span>
+            <span className="sl-brand-name">SMART LIB<small>UOU LIBRARY</small></span>
           </div>
-
-          {/* ==========================================
-              우측 패널 (폼 영역)
-              ========================================== */}
-          <div className="right-pane">
-            
-            {/* 1. 로그인 화면 */}
-            {!isSignUpMode && !isForgotPasswordMode && (
-              <>
-                <h1 style={{ color: '#fff', fontSize: '2rem', margin: '0 0 10px 0', fontWeight: '900' }}>로그인</h1>
-                <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem', margin: '0 0 40px 0' }}>
-                  계정이 없으신가요? <span className="text-link" onClick={() => { setIsSignUpMode(true); setPassword(''); setSignUpStep(1); }}>회원가입</span>
-                </p>
-
-                {isExamPeriod && (
-                  <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.3)', color: '#fca5a5', padding: '12px 16px', borderRadius: '10px', marginBottom: '20px', fontSize: '0.85rem' }}>
-                    🚨 시험 기간 정책 가동 중 (외부인 이용 금지)
-                  </div>
-                )}
-
-                <form onSubmit={async (e) => {
-                  e.preventDefault(); 
-                  if (!loginId || !password) return alert("아이디와 비밀번호를 입력해주세요.");
-                  try {
-                    const emailToLogin = loginId.includes('@') ? loginId : `${loginId}@test.com`;
-                    const cred = await signInWithEmailAndPassword(auth, emailToLogin, password);
-                    if (!emailToLogin.includes('@test.com') && !cred.user.emailVerified) {
-                      await signOut(auth); 
-                      return alert("🚨 이메일 인증이 완료되지 않았습니다.");
-                    }
-                  } catch (err) { alert("❌ 로그인 실패: 아이디 또는 비밀번호가 틀립니다."); }
-                }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '15px' }}>
-                    <input className="form-input" type="text" placeholder="Email address" onChange={e => setLoginId(e.target.value)} />
-                    <input className="form-input" type="password" placeholder="Password" onChange={e => setPassword(e.target.value)} />
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
-                    <label style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                      <input type="checkbox" style={{ accentColor: '#3b82f6' }} /> 아이디 저장
-                    </label>
-                    <span onClick={() => setIsForgotPasswordMode(true)} className="text-link" style={{ fontSize: '0.85rem' }}>비밀번호 찾기</span>
-                  </div>
-
-                  <button className="primary-btn" type="submit">Log in</button>
-                </form>
-
-                {/* 구분선 & 소셜 로그인 */}
-                <div style={{ display: 'flex', alignItems: 'center', margin: '30px 0', color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem' }}>
-                  <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
-                  <span style={{ padding: '0 15px' }}>Or continue with</span>
-                  <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
-                </div>
-                
-                <div style={{ display: 'flex', gap: '15px' }}>
-                  <button className="social-btn" onClick={() => alert("구글 로그인은 추후 지원 예정입니다.")}>
-                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#EA4335" d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.761H12.545z"/></svg> Google
-                  </button>
-                  <button className="social-btn" onClick={() => alert("애플 로그인은 추후 지원 예정입니다.")}>
-                    <svg viewBox="0 0 24 24" fill="#fff" width="18" height="18"><path d="M16.365 21.43c-1.393.99-2.825.968-4.211 0-3.32-2.315-5.914-7.59-5.914-11.66 0-2.813 1.547-4.321 3.23-4.321 1.34 0 2.213.676 3.102.676.883 0 1.916-.723 3.424-.723 1.55 0 2.827.697 3.633 1.83-3.136 1.83-2.675 6.182.392 7.42-1.026 2.585-2.378 5.71-3.656 6.778zM14.931 4.542c-.22 2.65-2.483 4.887-5.011 4.704.286-2.684 2.515-4.832 5.011-4.704z"/></svg> Apple
-                  </button>
-                </div>
-              </>
-            )}
-
-            {/* 2. 회원가입 화면 */}
-            {isSignUpMode && (
-              <>
-                <h1 style={{ color: '#fff', fontSize: '1.8rem', margin: '0 0 10px 0', fontWeight: '900' }}>
-                  {signupType === 'SELECT' ? '계정 생성' : signupType === 'STUDENT' ? '학생 계정 생성' : '외부인 계정 생성'}
-                </h1>
-                <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem', margin: '0 0 35px 0' }}>
-                  이미 계정이 있으신가요? <span className="text-link" onClick={handleCancelRegistration}>로그인</span>
-                </p>
-
-                {signupType === 'SELECT' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                    <button className="form-input" onClick={() => setSignupType('STUDENT')} style={{ padding: '20px', textAlign: 'left', cursor: 'pointer', fontSize: '1.1rem', fontWeight: '800' }}>🎓 재학생 입니다</button>
-                    <button className="form-input" onClick={() => setSignupType('GUEST')} style={{ padding: '20px', textAlign: 'left', cursor: 'pointer', fontSize: '1.1rem', fontWeight: '800' }}>👤 외부인 입니다</button>
-                  </div>
-                )}
-
-                {signupType !== 'SELECT' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                    
-                    {signUpStep === 1 && (
-                      <>
-                        <input className="form-input" type="email" placeholder="Email Address" onChange={e => setRealEmail(e.target.value)} />
-                        <button className="primary-btn" onClick={async () => {
-                          if (!realEmail || !realEmail.includes('@')) return alert("❌ 올바른 이메일 형식을 입력해주세요.");
-                          try {
-                            const cred = await createUserWithEmailAndPassword(auth, realEmail, TEMP_PASS);
-                            await sendEmailVerification(cred.user);
-                            alert("✅ 인증 메일이 발송되었습니다. 메일함 확인 후 다음 단계를 진행해주세요.");
-                            setSignUpStep(2); 
-                          } catch(e) {
-                            if (e.code === 'auth/email-already-in-use') {
-                              try {
-                                const cred = await signInWithEmailAndPassword(auth, realEmail, TEMP_PASS);
-                                await sendEmailVerification(cred.user); 
-                                setSignUpStep(2);
-                              } catch(err) { alert("❌ 이미 정식 가입된 이메일입니다."); }
-                            } else { alert("❌ 오류: " + e.message); }
-                          }
-                        }}>Verify Email</button>
-                      </>
-                    )}
-
-                    {signUpStep === 2 && (
-                      <>
-                        <div style={{ background: 'rgba(255,255,255,0.08)', padding: '15px', borderRadius: '12px', color: '#fff', fontSize: '0.9rem', border: '1px solid rgba(255,255,255,0.2)' }}>
-                          <b style={{color: '#93c5fd'}}>{realEmail}</b>로 인증 메일을 보냈습니다.<br/>링크 클릭 후 아래 버튼을 눌러주세요.
-                        </div>
-                        <button className="primary-btn" onClick={async () => {
-                          if (!auth.currentUser) return alert("❌ 세션이 만료되었습니다.");
-                          await auth.currentUser.reload(); 
-                          if (auth.currentUser.emailVerified) setSignUpStep(3); 
-                          else alert("🚨 아직 인증되지 않았습니다.");
-                        }}>Check Verification</button>
-                      </>
-                    )}
-
-                    {signUpStep === 3 && (
-                      <>
-                        <div style={{ display: 'flex', gap: '15px' }}>
-                          <input className="form-input" type="text" placeholder="Name" onChange={e => setName(e.target.value)} />
-                          <input className="form-input" type="text" placeholder={signupType === 'STUDENT' ? "Student ID" : "Phone number"} onChange={e => setStudentId(e.target.value)} />
-                        </div>
-                        <input className="form-input" type="password" placeholder="Password (6+ chars)" onChange={e => setPassword(e.target.value)} />
-                        <input className="form-input" type="password" placeholder="Confirm password" onChange={e => setPasswordConfirm(e.target.value)} />
-                        
-                        <label style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', cursor: 'pointer' }}>
-                          <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} style={{ accentColor: '#3b82f6', width: '16px', height: '16px' }} /> 
-                          <span>I agree to the <span className="text-link">Terms & Conditions</span></span>
-                        </label>
-
-                        <button className="primary-btn" style={{ marginTop: '15px' }} onClick={async () => {
-                          if (!name || !studentId) return alert("정보를 모두 입력해주세요.");
-                          if (password.length < 6) return alert("❌ 비밀번호는 6자리 이상이어야 합니다.");
-                          if (password !== passwordConfirm) return alert("❌ 비밀번호가 일치하지 않습니다.");
-                          if (!agreed) return alert("🚨 약관에 동의해주세요.");
-                          try {
-                            await updatePassword(auth.currentUser, password);
-                            await updateProfile(auth.currentUser, { displayName: name });
-                            await setDoc(doc(db, "User", auth.currentUser.uid), { name, studentNo: studentId, email: realEmail, role: 'CLIENT', createdAt: serverTimestamp() });
-                            alert("🎉 최종 가입 완료!");
-                            await signOut(auth);
-                            handleCancelRegistration();
-                          } catch(e) { alert("가입 오류: " + e.message); }
-                        }}>Create account</button>
-                      </>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* 3. 비밀번호 찾기 화면 */}
-            {isForgotPasswordMode && (
-              <>
-                <h1 style={{ color: '#fff', fontSize: '2rem', margin: '0 0 10px 0', fontWeight: '900' }}>비밀번호 찾기</h1>
-                <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.95rem', margin: '0 0 40px 0', lineHeight: '1.5' }}>
-                  가입하신 이메일 주소를 입력하시면<br/>재설정 링크를 보내드립니다.
-                </p>
-                
-                <input className="form-input" type="email" placeholder="Email Address" onChange={e => setResetStudentId(e.target.value)} style={{ marginBottom: '20px' }} />
-                
-                <button className="primary-btn" style={{ marginBottom: '20px' }} onClick={async () => {
-                  if (!resetStudentId || !resetStudentId.includes('@')) return alert("올바른 이메일 주소를 입력해주세요.");
-                  try {
-                    await sendPasswordResetEmail(auth, resetStudentId, { url: 'https://library-pwa-psi.vercel.app/reset-password', handleCodeInApp: true });
-                    alert(`✅ 메일 발송 완료!`);
-                    setIsForgotPasswordMode(false); setResetStudentId('');
-                  } catch (error) { alert(`❌ 오류가 발생했습니다.\n${error.message}`); }
-                }}>Send Reset Link</button>
-                
-                <div style={{ textAlign: 'center' }}>
-                  <span className="text-link" onClick={() => setIsForgotPasswordMode(false)} style={{ fontSize: '0.9rem' }}>로그인으로 돌아가기</span>
-                </div>
-              </>
-            )}
-
+          <div className="auth-book"><Icon name="book" size={140} stroke={1} style={{ color: 'rgba(255,255,255,.75)' }} /></div>
+          <div className="auth-hero" style={{ position: 'relative', zIndex: 1 }}>
+            <span className="sl-eyebrow"><span className="dot" />24/7 SMART RESERVATION</span>
+            <h2 className="sl-display" style={{ fontSize: 'clamp(2.2rem, 4vw, 3.1rem)', margin: '16px 0 14px' }}>지식의 경계를 넘어,<br /><span className="sl-grad-text">나를 뛰어넘는다</span></h2>
+            <p className="sl-muted" style={{ margin: 0, lineHeight: 1.6 }}>울산과학대학교 스마트 도서관<br />좌석 예약 · 도서 검색 · 모바일 출입증</p>
+            <div className="sl-row" style={{ marginTop: 28, gap: 10, flexWrap: 'wrap' }}>
+              {['실시간 좌석', 'QR 입실', 'AI 사서'].map(t => <span key={t} className="sl-chip" style={{ background: 'rgba(255,255,255,.08)' }}>{t}</span>)}
+            </div>
           </div>
         </div>
+
+        {/* 폼 패널 */}
+        <div className="auth-form">
+          {isExamPeriod && (
+            <div className="sl-chip red" style={{ height: 'auto', padding: '10px 14px', borderRadius: 14, marginBottom: 20, whiteSpace: 'normal' }}>🚨 시험 기간 정책 가동 중 · 외부인 이용이 제한됩니다</div>
+          )}
+
+          {mode === 'LOGIN' && (
+            <>
+              <h1 className="sl-h2" style={{ fontSize: '2rem', marginBottom: 8 }}>다시 오신 걸 환영해요</h1>
+              <p className="sl-muted" style={{ margin: '0 0 30px' }}>계정이 없으신가요? <button className="sl-btn ghost sm" style={{ padding: '0 6px', height: 'auto', color: 'var(--cyan)' }} onClick={() => { setMode('SIGNUP'); setError(''); }}>회원가입</button></p>
+              <form onSubmit={handleLogin} className="sl-stack">
+                <label className="sl-field"><span className="sl-label">아이디 또는 이메일</span>
+                  <input className="sl-input" autoComplete="username" placeholder="학번 또는 example@email.com" value={loginId} onChange={e => setLoginId(e.target.value)} />
+                </label>
+                <label className="sl-field"><span className="sl-label">비밀번호</span>
+                  <input className="sl-input" type="password" autoComplete="current-password" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
+                </label>
+                <div className="sl-between" style={{ margin: '2px 0 6px' }}>
+                  <label className="sl-row sl-muted" style={{ gap: 8, fontSize: '.88rem', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={rememberId} onChange={e => setRememberId(e.target.checked)} style={{ accentColor: '#6d8dff', width: 16, height: 16 }} /> 아이디 저장
+                  </label>
+                  <button type="button" className="sl-btn ghost sm" style={{ color: 'var(--text-2)' }} onClick={() => { setMode('FORGOT'); setError(''); }}>비밀번호 찾기</button>
+                </div>
+                {error && <p style={{ margin: 0, color: '#fecdd3', fontSize: '.88rem', fontWeight: 600 }}>⚠ {error}</p>}
+                <button className="sl-btn primary lg block" type="submit" disabled={busy}>{busy ? '로그인 중…' : '로그인'} {!busy && <Icon name="arrowRight" size={18} stroke={2.2} />}</button>
+              </form>
+              <p className="sl-faint" style={{ fontSize: '.78rem', margin: '26px 0 0', textAlign: 'center' }}>학번만 입력하면 테스트 계정(@test.com)으로 로그인됩니다</p>
+            </>
+          )}
+
+          {mode === 'SIGNUP' && (
+            <>
+              <button className="sl-btn ghost sm" style={{ alignSelf: 'flex-start', marginLeft: -10, marginBottom: 10 }} onClick={resetSignup}><Icon name="arrowLeft" size={16} />로그인으로</button>
+              <h1 className="sl-h2" style={{ fontSize: '1.8rem', marginBottom: 8 }}>
+                {signupType === 'SELECT' ? '계정 만들기' : signupType === 'STUDENT' ? '재학생 가입' : '외부인 가입'}
+              </h1>
+              <p className="sl-muted" style={{ margin: '0 0 24px' }}>{signupType === 'SELECT' ? '이용자 유형을 선택해 주세요.' : '이메일 인증 후 3단계로 간단히 가입할 수 있어요.'}</p>
+
+              {signupType === 'SELECT' && (
+                <div className="sl-stack">
+                  {[{ t: 'STUDENT', icon: 'user', title: '재학생', sub: '학번으로 가입 · 시험 기간에도 이용 가능' }, { t: 'GUEST', icon: 'users', title: '외부인', sub: '연락처로 가입 · 일부 기간 이용 제한' }].map(o => (
+                    <button key={o.t} className="sl-card hover" onClick={() => setSignupType(o.t)} style={{ textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 16, padding: 20, color: 'inherit' }}>
+                      <span style={{ width: 48, height: 48, borderRadius: 16, display: 'grid', placeItems: 'center', background: 'var(--grad-soft)', border: '1px solid rgba(109,141,255,.3)', color: '#c7d2fe' }}><Icon name={o.icon} size={22} /></span>
+                      <span style={{ flex: 1 }}><b style={{ fontSize: '1.05rem' }}>{o.title}</b><br /><span className="sl-faint" style={{ fontSize: '.85rem' }}>{o.sub}</span></span>
+                      <Icon name="chevronRight" size={18} style={{ color: 'var(--text-3)' }} />
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {signupType !== 'SELECT' && (
+                <div className="sl-stack">
+                  <div className="sl-row" style={{ gap: 6, marginBottom: 6 }}>
+                    {steps.map((label, i) => (
+                      <div key={label} style={{ flex: 1 }}>
+                        <div style={{ height: 4, borderRadius: 4, background: i < signUpStep ? 'var(--grad)' : 'rgba(255,255,255,.1)' }} />
+                        <div style={{ fontSize: '.72rem', fontWeight: 700, marginTop: 6, color: i < signUpStep ? 'var(--text)' : 'var(--text-3)' }}>{i + 1}. {label}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {signUpStep === 1 && <>
+                    <label className="sl-field"><span className="sl-label">이메일</span>
+                      <input className="sl-input" type="email" placeholder="example@email.com" value={realEmail} onChange={e => setRealEmail(e.target.value)} />
+                    </label>
+                    {error && <p style={{ margin: 0, color: '#fecdd3', fontSize: '.88rem', fontWeight: 600 }}>⚠ {error}</p>}
+                    <button className="sl-btn primary lg block" disabled={busy} onClick={sendVerification}>{busy ? '전송 중…' : '인증 메일 보내기'}</button>
+                  </>}
+
+                  {signUpStep === 2 && <>
+                    <div style={{ padding: 16, borderRadius: 16, background: 'var(--grad-soft)', border: '1px solid rgba(109,141,255,.3)', lineHeight: 1.6, fontSize: '.92rem' }}>
+                      <b style={{ color: '#c7d2fe' }}>{realEmail}</b> 로 인증 메일을 보냈어요.<br />메일의 링크를 누른 뒤 아래 버튼을 눌러 주세요.
+                    </div>
+                    {error && <p style={{ margin: 0, color: '#fecdd3', fontSize: '.88rem', fontWeight: 600 }}>⚠ {error}</p>}
+                    <button className="sl-btn primary lg block" disabled={busy} onClick={checkVerification}>{busy ? '확인 중…' : '인증 완료했어요'}</button>
+                  </>}
+
+                  {signUpStep === 3 && <>
+                    <div className="sl-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <label className="sl-field"><span className="sl-label">이름</span><input className="sl-input" placeholder="홍길동" value={name} onChange={e => setName(e.target.value)} /></label>
+                      <label className="sl-field"><span className="sl-label">{signupType === 'STUDENT' ? '학번' : '연락처'}</span><input className="sl-input" inputMode="numeric" placeholder={signupType === 'STUDENT' ? '예: 2212020' : '01012345678'} value={studentId} onChange={e => setStudentId(e.target.value)} /></label>
+                    </div>
+                    <label className="sl-field"><span className="sl-label">비밀번호</span><input className="sl-input" type="password" autoComplete="new-password" placeholder="6자 이상" value={password} onChange={e => setPassword(e.target.value)} /></label>
+                    <label className="sl-field"><span className="sl-label">비밀번호 확인</span><input className="sl-input" type="password" autoComplete="new-password" placeholder="한 번 더 입력" value={passwordConfirm} onChange={e => setPasswordConfirm(e.target.value)} /></label>
+                    <label className="sl-row sl-muted" style={{ gap: 10, fontSize: '.88rem', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} style={{ accentColor: '#6d8dff', width: 16, height: 16 }} />
+                      도서관 이용 약관 및 개인정보 수집에 동의합니다
+                    </label>
+                    {error && <p style={{ margin: 0, color: '#fecdd3', fontSize: '.88rem', fontWeight: 600 }}>⚠ {error}</p>}
+                    <button className="sl-btn primary lg block" disabled={busy} onClick={createAccount}>{busy ? '가입 중…' : '가입 완료하기'}</button>
+                  </>}
+                </div>
+              )}
+            </>
+          )}
+
+          {mode === 'FORGOT' && (
+            <>
+              <button className="sl-btn ghost sm" style={{ alignSelf: 'flex-start', marginLeft: -10, marginBottom: 10 }} onClick={() => { setMode('LOGIN'); setError(''); }}><Icon name="arrowLeft" size={16} />로그인으로</button>
+              <h1 className="sl-h2" style={{ fontSize: '1.8rem', marginBottom: 8 }}>비밀번호 찾기</h1>
+              <p className="sl-muted" style={{ margin: '0 0 26px', lineHeight: 1.6 }}>가입한 이메일로 재설정 링크를 보내드려요.</p>
+              <div className="sl-stack">
+                <label className="sl-field"><span className="sl-label">이메일</span>
+                  <input className="sl-input" type="email" placeholder="example@email.com" value={resetEmail} onChange={e => setResetEmail(e.target.value)} />
+                </label>
+                {error && <p style={{ margin: 0, color: '#fecdd3', fontSize: '.88rem', fontWeight: 600 }}>⚠ {error}</p>}
+                <button className="sl-btn primary lg block" disabled={busy} onClick={sendReset}>{busy ? '전송 중…' : '재설정 링크 보내기'}</button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
-    </>
+    </div>
   );
 };
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, isSameMonth, addMonths, subMonths } from 'date-fns';
 import { doc, onSnapshot, setDoc } from "firebase/firestore"; 
-import { auth, db } from '../firebase'; 
+import { db } from '../firebase';
 import {
   uploadEventBanner,
   createEvent,
@@ -46,7 +46,7 @@ export default function AdminEvents() {
   const updateFacility = async (floor, status) => {
     try {
       await setDoc(doc(db, 'System', 'facilityStatus'), { [floor]: status }, { merge: true });
-    } catch (e) {
+    } catch {
       alert("상태 변경 중 오류가 발생했습니다.");
     }
   };
@@ -81,7 +81,7 @@ export default function AdminEvents() {
       if (ev._type === "EVENT") await updateEvent(ev.id, { isPinned: newStatus });
       else await updateNotice(ev.id, { isPinned: newStatus });
       load(); 
-    } catch (e) { alert("고정 처리 중 오류가 발생했습니다."); }
+    } catch { alert("고정 처리 중 오류가 발생했습니다."); }
   };
 
   const onFile = (e) => {

@@ -3,7 +3,6 @@ import { getFirestore } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
 import { getStorage } from "firebase/storage";
 
-console.log("확인용 API 키:", import.meta.env.VITE_FIREBASE_API_KEY); 
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -14,7 +13,6 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-console.log("캐시 비우기 얍!");
 // 1. Firebase 앱 초기화 (이 과정이 없으면 DB 연결이 불가능합니다)
 const app = initializeApp(firebaseConfig);
 
